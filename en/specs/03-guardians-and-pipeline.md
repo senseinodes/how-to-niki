@@ -116,7 +116,7 @@ Never modifies any files. Performs cross-bundle health inspection.
 | Code | Target & Condition | Severity |
 | :--- | :--- | :--- |
 | `frontmatter` | Frontmatter YAML parse failure | `error` |
-| `broken-link` | Broken or out-of-bundle Markdown link / image.<br>**Exemption:** `10_Inbox/11_rss/`, `10_Inbox/12_web-clipper/`, and `10_Inbox/14_podcast/` frequently inherit broken external links, so missing targets are not flagged there (`13_quick-notes` and `15_files` ARE checked) | `error` for OKF notes, `warning` for non-OKF |
+| `broken-link` | Broken or out-of-bundle Markdown link / image.<br>**Exemption:** `10_Inbox/11_rss/`, `10_Inbox/12_web-clipper/`, `10_Inbox/14_podcast/`, and `10_Inbox/19_private/` frequently inherit broken external links, so missing targets are not flagged there (`13_quick-notes` and `15_files` ARE checked) | `error` for OKF notes, `warning` for non-OKF |
 | `broken-wikilink` | Broken or out-of-bundle `[[target]]` / `![[embed]]` (Obsidian-style shortest-path & extensionless resolution) | `error` for OKF notes, `warning` for non-OKF |
 | `ambiguous-wikilink` | `[[name]]` matches multiple same-named files (still ambiguous even after same-folder preference) | `warning` |
 | `broken-source` | Missing or out-of-bundle target in `sources[].resource` / `superseded_by` | `error` for OKF notes, `warning` for non-OKF |
