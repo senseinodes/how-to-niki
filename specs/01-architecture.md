@@ -12,7 +12,7 @@
    LLM にファイル配置・索引・履歴維持を任せると、フォーマット崩れ・リンク切れ・未検証情報の混入が蓄積する。以下を徹底して防ぐ。
    - LLM が書くべき値（意味内容）とコードが導出する値（階層・カテゴリ番号・トラストティア）を分離する。
    - LLM の出力はすべて Pydantic ゲート（`gate_okf.py`）に通し、不合格ならエラーを差し戻して自己修復させる。
-   - 目録（`index.md`）・更新ログ（`log.md`）・監査ログ（`lineage.jsonl`）はコードのみが生成する。
+   - 目録（`index.md`）・更新ログ（`log.md`）・監査ログ（`lineage.jsonl`）はコードのみが生成する（`lineage.jsonl` は `build_index.py` が30分ごとに状態変化を拾って記録するため、人間やエージェントがゲートを実行し忘れても漏れない）。
 3. **会話自動記憶による記憶捏造リスクの排除:**
    会話ログから自動記憶を生成する仕組み（他人の記事内容と自分の体験が混ざるリスクや常駐グラフ DB の重さ）を避け、**ゲートを通過した確定 OKF Markdown ファイル群のみ** を Single Source of Truth とする。
 
@@ -53,8 +53,11 @@ AI エージェントが実装時に独自判断で逸脱してはならない�
    RSS 巡回時は音声ファイルを絶対にダウンロードしない。一次トリアージは `<title>` と `<description>`（ショーノート）のみで行い、人間が `[Send to PKM]` を押したエピソードだけ `<podcast:transcript>` 取得または `whisper.cpp` 文字起こしを実行する。
 5. **マルチフォーマットのサイドカー抽出:**
    `10_Inbox/` の PDF / Office / 画像は `MarkItDown`（ローカル VLM 連携）で `<filename>.extracted.md` を生成し、元バイナリを汚さずに SHA256 で差分管理する。
-6. **私的区分（例: `20_Literature/28_me/`）の徹底隔離:**
-   `.gitignore` で除外するだけでなく、`gate_okf.py` は `git check-ignore` を見て `lineage.jsonl` / `log.md` へ記録せず、Web アプリも Share・外部送信対象から除外する。
+6. **私的区分の隔離（Bronze `10_Inbox/19_private/` と Silver `20_Literature/28_me/`）:**
+   - Web アプリで「私的」フラグを付けたソースの Keep 記事・Podcast 文字起こしは、通常の `11_rss/` / `14_podcast/` ではなく `10_Inbox/19_private/` に保存する。
+   - 両フォルダを `.gitignore` で除外し（GitHub に上げない。Syncthing では同期する）、`gate_okf.py` / `build_index.py` は `git check-ignore` を見て `lineage.jsonl` / `log.md` へ記録しない。
+   - `hermes.py` は `19_private/` 由来の Bronze を LLM の配置計画にかけず `28_me` に固定し、SearXNG（外部検索エンジン）へ検索語を送らない。
+   - Web アプリは `sources.private == 1` と、パス接頭辞 `10_Inbox/19_private/` / `20_Literature/28_me/` の両方で Share を拒否する。
 
 ---
 
@@ -76,7 +79,7 @@ AI エージェントが実装時に独自判断で逸脱してはならない�
 │      - searxng        : メタ検索エンジン（JSON API 有効）                 │
 │      - open-webui     : 週次レビュー・長文対話 UI                         │
 │  • systemd timer（ホスト側 /opt/<project>/.venv）:                       │
-│      - build_index.py (30分毎) : サイドカー抽出・pkm.sqlite・index/log   │
+│      - build_index.py (30分毎) : サイドカー・pkm.sqlite・lineage・index/log│
 │      - autocommit.py  (02:30)  : ゲート検証付き自動 git commit & push    │
 │      - lint_wiki.py   (03:30)  : リンク切れ・孤立・SHOULD点検 → DB保存   │
 │      - run_graphify.py(04:00)  : Silver/Gold 限定ナレッジグラフ生成      │
@@ -94,6 +97,7 @@ AI エージェントが実装時に独自判断で逸脱してはならない�
 ### 重要な結合ポイント（スクリプトの単一配置）
 - 決定論的スクリプト群（`00_System/scripts/`）とスキーマ（`00_System/schemas/`）は **PKM バンドル内（`{{PKM_ROOT}}/00_System/`）に配置** する。
 - ホストの systemd timer も、Docker コンテナ（`rss-triage-app` / `hermes-agent`）も、バンドルをマウント（`/pkm`）して **同一のスクリプトコード** を実行する。これにより、コンテナとホストで仕様のズレが発生しない。
+- ただしスクリプトの「正本」は開発リポジトリの `pkm/00_System/`（テンプレート、テスト対象）で、実行されるのはバンドル側のコピーである。開発リポジトリで更新したら `{{PKM_ROOT}}/00_System/` へコピーし、バンドル側でもコミットする（手順は 05 §2.1）。
 
 ---
 
@@ -104,8 +108,8 @@ AI エージェントが実装時に独自判断で逸脱してはならない�
 | パターン | 構成 | 変更点・注意点 |
 | :--- | :--- | :--- |
 | **A: 2台構成（推奨・オリジナル準拠）** | 常時稼働 Linux（省電力PC / ミニPC / ラズパイ等）＋ GPU 搭載機（Apple Silicon Mac または NVIDIA GPU Linux/Windows） | 常時稼働の電気代を抑えつつ、推論時だけ GPU ノードへ HTTP 接続。GPU 機がスリープ中でも `build_index.py`（FTS のみ）や Web UI 閲覧は止まらない設計。 |
-| **B: 1台完結構成** | GPU / 十分な RAM（32GB+ 推奨）を備えた常時稼働 Linux または Mac 1台 | `INFERENCE_HOST` を `http://host.docker.internal:8080`（またはホスト LAN IP）に向ける。`llama-swap` と Docker 群を同一マシンで動かす。 |
-| **C: クラウド API 併用構成** | 常時稼働 Linux（または VPS）＋ OpenAI 互換クラウド API | `gemma_client.py` の `api_key` を環境変数化し、モデル名（`PKM_MODEL_*`）を差し替える。ただし Embedding 次元数（既定 768）を変更する場合は `pkm_config.EMBED_DIM` も合わせる必要がある。 |
+| **B: 1台完結構成** | GPU / 十分な RAM（32GB+ 推奨）を備えた常時稼働 Linux または Mac 1台 | `llama-swap` と Docker 群を同一マシンで動かす。`MAC_MINI_URL` は**ホストの LAN / Tailscale IP**（例: `http://192.168.1.10:8080`）にする。env ファイルは systemd（ホスト）と Compose（コンテナ）で共用するため、`localhost`（コンテナ内では自分自身）や `host.docker.internal`（Linux のホストからは引けず、コンテナでも `extra_hosts: host-gateway` が必要）は使わない。 |
+| **C: クラウド API 併用構成（参考・非サポート）** | 常時稼働 Linux（または VPS）＋ OpenAI 互換クラウド API | 「API コストゼロ」の前提から外れるため仕様の対象外。試す場合の変更点: `PKM_API_KEY`（`gemma_client` / MarkItDown / whisper / Open WebUI が共通で使う）と `PKM_MODEL_*` を設定、EmbeddingGemma 専用接頭辞（03 §3.1）と 768 次元（`pkm_config.EMBED_DIM`）を埋め込みモデルに合わせて変更、llama-swap 固有の `/running`（ヘッダーの推論状態表示）と whisper の `/v1/audio/transcriptions` の代替を用意。 |
 
 ### モデル容量の目安（メモリ別）
 推論ノードの VRAM / 統合メモリに応じて `llama-swap` のモデルを調整できる（アプリ側のモデル ID は環境変数で抽象化済み）。
@@ -127,7 +131,7 @@ AI エージェントが実装時に独自判断で逸脱してはならない�
 | クライアント / スマホ | 常時稼働サーバー | `HTTP :8000`（バンドル毎に増設可） | `rss-triage-app` Web UI / PWA |
 | クライアント | 常時稼働サーバー | `HTTP :3000` | `Open WebUI`（週次レビュー・対話） |
 | サーバー（App / Hermes / Scripts） | 推論サーバー | `HTTP :8080` | `llama-swap`（Chat / Embed / Whisper） |
-| サーバー（Hermes / Open WebUI） | Docker 内部 / `:8888` | `HTTP :8888` | `SearXNG` メタ検索 JSON API |
+| サーバー（Hermes / Open WebUI） | Docker 内部 `http://searxng:8080`（ホストからは `:8888`） | `HTTP :8080`（コンテナ間）/ `:8888`（公開） | `SearXNG` メタ検索 JSON API |
 | サーバー・クライアント・NAS | メッシュ P2P | `TCP/UDP :22000` | `Syncthing` ファイル双方向同期 |
 
 ### 5.2 二重同期（Syncthing × Git）の役割分担
@@ -139,12 +143,13 @@ AI エージェントが実装時に独自判断で逸脱してはならない�
   - **重要:** `.git` は Syncthing で同期しない。複数端末から同時にコミットすると履歴が分岐・破損するため、**Git 管理と自動コミットは常時稼働サーバー1台に集約**する。
 - **Git / GitHub Private リポジトリ（履歴保全・ゲート基準）:**
   - 対象: OKF Markdown、スクリプト、設定、`lineage.jsonl`、`index.md`、`log.md`。
-  - 除外（`.gitignore`）: `90_Assets/*`、私的カテゴリ（`20_Literature/28_me/`）、`00_System/graph/*`、`*.extracted.md`、`10_Inbox/15_files/` のバイナリ原本、`*.sqlite*`、`00_System/logs/rejected/`、`lost+found/`、`.stfolder/`。
+  - 除外（`.gitignore`）: `90_Assets/*`、私的区分（`20_Literature/28_me/`, `10_Inbox/19_private/`）、`00_System/graph/*`、`*.extracted.md`、`10_Inbox/15_files/` のバイナリ原本、`*.sqlite*`、`00_System/logs/rejected/`、`lost+found/`、`.stfolder/`。
   - **重要:** `gate_okf.py` のルール7（人間記述の保護）は `git show HEAD:<path>` を基準にするため、毎晩 `autocommit.py` で合格ファイルだけを自動コミット＆push する。
 
 ### 5.3 マルチバンドル拡張性
 仕事用・個人用などで PKM バンドルを分けたい場合、同じリポジトリコードのまま以下を分けるだけで複数起動できる設計とする。
-- データ配置: `/srv/<vault_name>`
+- データ配置: `/srv/<vault_name>`（systemd ユニットはすべて `@` テンプレートで `/srv/%i` を参照するため、この配置は固定）
 - 環境変数: `/etc/<project>/<vault_name>.env`（`PKM_ROOT`, `NIKI_VAULT`, `NIKI_APP_PORT` を変更）
 - Compose プロジェクト: `docker compose -p <project>-<vault_name>`
+- systemd: `<project>-build-index@<vault_name>.timer` など5ユニットをバンドルごとに有効化
 - `COMPOSE_PROFILES=tools`（SearXNG と Open WebUI）はサーバー全体で1つのバンドルだけ有効にする。

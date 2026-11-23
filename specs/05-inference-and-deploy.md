@@ -10,7 +10,7 @@ GPU メモリ帯域を最大限に使うため、Docker ではなく **ホスト
 
 | モデル ID | 実体 | コンテキスト | グループ | 同時稼働方針 |
 | :--- | :--- | :--- | :--- | :--- |
-| `gemma4-review` | Gemma 4 26B-A4B Q4_0 + mmproj Q8_0 | 65536 (KV `q8_0`) | `llm` | `swap: true`, `exclusive: false`（`gemma4-fast` と排他） |
+| `gemma4-review` | Gemma 4 26B-A4B Q4_0 + mmproj Q8_0 | 65536 (KV `q8_0`) | `llm` | `swap: true`（グループ内で `gemma4-fast` と入れ替え）、`exclusive: false`（他グループの Embed / Whisper は止めない） |
 | `gemma4-fast` | Gemma 4 12B Q4_0 + mmproj Q8_0 | 32768 | `llm` | **`--reasoning-budget 0` で思考無効化**（短判定・OCR・構造化で高速化・空応答防止） |
 | `gemma-embed` | EmbeddingGemma-300M QAT Q8_0 | 2048 (`--embedding --pooling mean`) | `embed` | `swap: false`, `exclusive: false`, `persistent: true`（LLM と並行稼働） |
 | `whisper` | `whisper-server` (`ggml-large-v3-turbo.bin`) | — | `audio` | `swap: false`, `exclusive: false`, `persistent: true`（LLM/Embed と並行稼働） |
@@ -25,10 +25,11 @@ GPU メモリ帯域を最大限に使うため、Docker ではなく **ホスト
   --host 127.0.0.1 --port ${PORT}
   --model ${models}/ggml-large-v3-turbo.bin
   --request-path /v1/audio/transcriptions --inference-path ""
-  --language {{PRIMARY_LANG}}
+  --language ja
   --convert
   --tmp-dir /tmp
   ```
+  - `--language` は `{{PRIMARY_LANG}}`（オリジナルは `ja`）。`cmd` 内に `#` コメントを書くと引数として渡ってしまうので書かない。
   - `checkEndpoint: /v1/audio/transcriptions/`（`whisper-server` には `/health` がないため）。
   - `--convert` には `ffmpeg` のインストールが必要（mp3/m4a → 16kHz wav 変換）。
   - **`--tmp-dir /tmp` 必須:** `launchd` や `systemd` から起動すると作業ディレクトリが `/` になり、一時ファイル作成で HTTP 500 になるのを防ぐ。
@@ -53,8 +54,19 @@ GPU メモリ帯域を最大限に使うため、Docker ではなく **ホスト
 | :--- | :--- |
 | `{{PKM_ROOT}}`（例: `/srv/pkm`） | PKM バンドル実体（専用ストレージを使う場合は `/etc/fstab` に `UUID=...` + `noatime,nofail` で固定マウント。Desktop の `/media/` 自動マウントは使わない） |
 | `{{REPO_DIR}}`（例: `/opt/{{PROJECT_NAME}}`） | 開発リポジトリ＋ホスト用 Python 仮想環境（`.venv`、`uv sync --locked --no-dev`） |
-| `/etc/{{PROJECT_NAME}}/{{VAULT_NAME}}.env` | バンドルごとの環境変数ファイル（systemd と Docker Compose で共用） |
+| `/etc/{{PROJECT_NAME}}/{{VAULT_NAME}}.env` | バンドルごとの環境変数ファイル（systemd の `EnvironmentFile` と Docker Compose の `--env-file` で共用） |
 
+- **`{{PKM_ROOT}}` は `/srv/{{VAULT_NAME}}` にする。** systemd ユニットはすべて `@` テンプレートで `/srv/%i` を参照するため。
+- **PKM バンドルの展開と Git 管理（開発リポジトリとは別の private リポジトリ）:**
+  ```bash
+  git clone <開発リポジトリ> /tmp/{{PROJECT_NAME}}-template
+  cp -a /tmp/{{PROJECT_NAME}}-template/pkm/. {{PKM_ROOT}}/
+  cd {{PKM_ROOT}} && git init -b main && git add -A && git commit -m "init bundle"
+  # 任意: GitHub に private リポジトリを作り git remote add origin ... && git push -u origin main
+  ```
+  ゲートのルール7（人間記述の保護）と `autocommit.py` はバンドルが Git リポジトリであることが前提（Git がないと保護が黙って無効になる）。
+- **スクリプト更新の反映:** 開発リポジトリで `pkm/00_System/{scripts,schemas,specs}/` を更新したら `{{PKM_ROOT}}/00_System/` へコピーし、バンドル側でもコミットする。コンテナもホストもバンドル側のコピーを実行する。
+- **ホストの Python 環境:** `{{REPO_DIR}}` で `uv sync --locked --no-dev` し、`sqlite-vec` のロード確認（06 §3 Gotcha 2）を行う。
 - Docker は **Docker 公式 apt リポジトリ**（`docker-ce` + `docker-compose-plugin`）を使用（snap 版は `/srv` マウント制約や自動更新再起動があるため非推奨）。
 - 24時間稼働のため OS の自動サスペンドを無効化する（`systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`）。
 
@@ -64,23 +76,38 @@ GPU メモリ帯域を最大限に使うため、Docker ではなく **ホスト
 
 | サービス | イメージ / ビルド | ポート | プロファイル | 役割 |
 | :--- | :--- | :--- | :--- | :--- |
-| `rss-triage-app` | `apps/rss_triage/Dockerfile` (`python:3.13-slim` + `git` + `uv`) | `${NIKI_APP_PORT:-8000}:8000` | 常時 | トリアージ・検索・再レビュー・ダッシュボード Web UI。`user: "${NIKI_UID}:${NIKI_GID}"`、`${PKM_ROOT}:/pkm` マウント、`HOME=/tmp`、`PKM_ENV_FILE=/nonexistent`。ビルド時に `sqlite-vec` ロード確認＋`/healthz` HEALTHCHECK。 |
-| `hermes-agent` | `rss-triage-app` と同一イメージ | なし | 常時 | `command: ["python", "/pkm/00_System/scripts/hermes.py", "--watch"]`、`healthcheck: { disable: true }`。`SEARXNG_URL` を参照。 |
+| `rss-triage-app` | `apps/rss_triage/Dockerfile` (`python:3.13-slim` + `git` + `tzdata` + `uv`) | `${NIKI_APP_PORT:-8000}:8000` | 常時 | トリアージ・検索・再レビュー・ダッシュボード Web UI。`user: "${NIKI_UID}:${NIKI_GID}"`、`${PKM_ROOT}:/pkm` マウント、`PKM_ROOT=/pkm`、`HOME=/tmp`、`PKM_ENV_FILE=/nonexistent`。ビルド時に `sqlite-vec` ロード確認＋`/healthz` HEALTHCHECK。 |
+| `hermes-agent` | `rss-triage-app` と同一イメージ | なし | 常時 | `command: ["python", "/pkm/00_System/scripts/hermes.py", "--watch"]`、`healthcheck: { disable: true }`。`SEARXNG_URL=${HERMES_SEARXNG_URL:-http://searxng:8080}` を参照。 |
 | `searxng` | `${SEARXNG_IMAGE:-searxng/searxng:<pinned-tag>}` | `${NIKI_SEARXNG_PORT:-8888}:8080` | `tools` | メタ検索。`deploy/server/searxng/settings.yml` を `:ro` マウント（`search.formats: [html, json]`, `server.limiter: false`, `server.method: GET`）。`SEARXNG_SECRET` 必須。 |
-| `open-webui` | `${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:<pinned-tag>}` | `${NIKI_WEBUI_PORT:-3000}:8080` | `tools` | 週次レビュー・長文対話 UI。`OPENAI_API_BASE_URL=${MAC_MINI_URL}/v1`, `OPENAI_API_KEY=local`, `ENABLE_OLLAMA_API=false`, `DEFAULT_MODELS=gemma4-review`, Web 検索エンジンに `http://searxng:8080/search?q=<query>` を接続、`ANONYMIZED_TELEMETRY=false`。 |
+| `open-webui` | `${OPEN_WEBUI_IMAGE:-ghcr.io/open-webui/open-webui:<pinned-tag>}` | `${NIKI_WEBUI_PORT:-3000}:8080` | `tools` | 週次レビュー・長文対話 UI。`OPENAI_API_BASE_URL=${MAC_MINI_URL}/v1`, `OPENAI_API_KEY=${PKM_API_KEY:-local}`, `ENABLE_OLLAMA_API=false`, `DEFAULT_MODELS=${PKM_MODEL_REVIEW:-gemma4-review}`, Web 検索エンジンに `http://searxng:8080/search?q=<query>` を接続、`ANONYMIZED_TELEMETRY=false`。 |
 
-> **ポイント:** `COMPOSE_PROFILES=tools` はサーバー上の1バンドルでのみ有効にし、2つ目のバンドルでは空にして SearXNG / Open WebUI の重複起動を避ける。
+> **ポイント:** `COMPOSE_PROFILES=tools` はサーバー上の1バンドルでのみ有効にし、2つ目のバンドルでは空にして SearXNG / Open WebUI の重複起動を避ける。2つ目のバンドルの Hermes は `HERMES_SEARXNG_URL` に1つ目の SearXNG の公開 URL（例: `http://<host>:8888`）を設定する（`http://searxng:8080` は同じ Compose プロジェクト内でしか引けない）。
+
+> **環境変数はコンテナへ明示的に渡す:** `--env-file` は Compose ファイル内の `${VAR}` の展開に使われるだけで、コンテナには入らない。`env_file:` は使わず（ホスト用の `PKM_ROOT=/srv/...` などがコンテナに入ってしまうため）、`rss-triage-app` / `hermes-agent` の `environment:` に使う変数を**既定値付きで1つずつ列挙**する。対象: `MAC_MINI_URL`, `PKM_MODEL_REVIEW/FAST/EMBED`, `PKM_LLM_TIMEOUT`, `PKM_API_KEY`, `TZ`（`${TZ:-Asia/Tokyo}`。全4サービス）、アプリのみ `NIKI_VAULT_NAME`, `NIKI_REVIEWER`, `NIKI_CRAWL_INTERVAL`, `NIKI_CRAWL_ON_START`, `NIKI_ARCHIVE_DAYS`, `NIKI_FETCH_FULLTEXT`, `NIKI_USER_AGENT`, `HATENA_*`, `NIKI_XURL`, `SYNCTHING_*`、Hermes のみ `SEARXNG_URL`, `HERMES_INTERVAL`, `HERMES_LIMIT`。`pkm.env.example` の全変数が Compose で参照されていることをテストで突き合わせる（06 §2）。
 
 ### 2.3 systemd ユニット＆タイマー一覧（ログイン不要のシステムユニット）
 
-すべて `RequiresMountsFor=/srv/%i`（または `{{PKM_ROOT}}`）を指定し、ディスクマウント前に走らないようにする。
+**5つすべて `@` テンプレート**にし、`%i` = `{{VAULT_NAME}}` でバンドルごとに有効化する（例: `sudo systemctl enable --now {{PROJECT_NAME}}-build-index@pkm.timer`）。共通設定:
+
+```ini
+[Unit]
+# ディスクマウント前に走らない（systemd は行末コメントを書けないので別行に書く）
+RequiresMountsFor=/srv/%i
+[Service]
+Type=oneshot
+User={{LINUX_USER}}
+Group={{LINUX_USER}}
+EnvironmentFile=/etc/{{PROJECT_NAME}}/%i.env
+WorkingDirectory=/srv/%i
+ExecStart={{REPO_DIR}}/.venv/bin/python /srv/%i/00_System/scripts/<script>.py
+```
 
 | ユニット | スケジュール | 実行コマンド・設定 |
 | :--- | :--- | :--- |
-| `{{PROJECT_NAME}}-compose@.service` | ブート時（`multi-user.target`） | `docker compose -p {{PROJECT_NAME}}-%i --env-file /etc/{{PROJECT_NAME}}/%i.env up -d --build --remove-orphans`（`Requires=docker.service`） |
-| `{{PROJECT_NAME}}-build-index.timer` | 30分ごと（`*:0/30`, `RandomizedDelaySec=60`, `Persistent=true`） | `build_index.py`（`Nice=10`, `IOSchedulingClass=idle`, `TimeoutStartSec=2h`） |
+| `{{PROJECT_NAME}}-compose@.service` | ブート時（`multi-user.target`） | `WorkingDirectory={{REPO_DIR}}`、`docker compose -p {{PROJECT_NAME}}-%i --env-file /etc/{{PROJECT_NAME}}/%i.env up -d --build --remove-orphans`（`Requires=docker.service`, `Type=oneshot`, `RemainAfterExit=yes`, `ExecStop=... down`, `TimeoutStartSec=900`。`User=` なし） |
+| `{{PROJECT_NAME}}-build-index@.timer` | 30分ごと（`*:0/30`, `RandomizedDelaySec=60`, `Persistent=true`） | `build_index.py`（`Nice=10`, `IOSchedulingClass=idle`, `TimeoutStartSec=2h`。lineage もここで記録される） |
 | `{{PROJECT_NAME}}-autocommit@.timer` | 毎日 `02:30` | `autocommit.py`（ゲート不合格はコミットせず終了コード 1、push 失敗は 3 で失敗検知可能にする） |
-| `{{PROJECT_NAME}}-lint-wiki.timer` | 毎日 `03:30` | `lint_wiki.py --save-db`（結果を `pkm.sqlite` へ保存してダッシュボード表示） |
+| `{{PROJECT_NAME}}-lint-wiki@.timer` | 毎日 `03:30` | `lint_wiki.py --save-db`（結果を `pkm.sqlite` へ保存してダッシュボード表示） |
 | `{{PROJECT_NAME}}-graphify@.timer` | 毎日 `04:00`（`RandomizedDelaySec=5min`） | `run_graphify.py`（`Nice=15`, `TimeoutStartSec=4h`） |
 
 **夜間ジョブの順序意図:** `02:30` 自動コミット（日中の人間編集を HEAD に確定） → `03:30` Wiki 健全性点検 → `04:00` 確定 Silver/Gold のグラフ生成。
@@ -91,20 +118,26 @@ GPU メモリ帯域を最大限に使うため、Docker ではなく **ホスト
 
 | 変数名 | 必須 | 既定値 / 例 | 用途 |
 | :--- | :---: | :--- | :--- |
-| `PKM_ROOT` | 必須 | `/srv/pkm` | ホスト上の PKM バンドルパス |
-| `MAC_MINI_URL` | 必須 | `http://gpu-node:8080` | 推論サーバー（`llama-swap`）のベース URL |
+| `PKM_ROOT` | 必須 | `/srv/{{VAULT_NAME}}` | ホスト上の PKM バンドルパス（コンテナ内は Compose が `/pkm` に上書き） |
+| `MAC_MINI_URL` | 必須 | `http://{{INFERENCE_HOST}}:8080` | 推論サーバー（`llama-swap`）のベース URL。ホストとコンテナの両方から届くアドレスにする（01 §4 構成 B 参照） |
 | `PKM_DB` | 任意 | `$PKM_ROOT/00_System/pkm.sqlite` | 検索・lint 用 SQLite パス |
 | `PKM_LLM_TIMEOUT` | 任意 | `300` | LLM 応答タイムアウト秒 |
-| `PKM_MODEL_REVIEW` / `FAST` / `EMBED` | 任意 | `gemma4-review` / `gemma4-fast` / `gemma-embed` | 使用モデル ID の上書き |
+| `PKM_MODEL_REVIEW` / `FAST` / `EMBED` | 任意 | `gemma4-review` / `gemma4-fast` / `gemma-embed` | 使用モデル ID の上書き（llama-swap の `config.yaml` と揃える。Open WebUI の既定モデルにも使う） |
+| `PKM_API_KEY` | 任意 | `local` | OpenAI 互換 API キー（llama-swap は認証しない。前段に認証プロキシを置く場合のみ） |
+| `TZ` | 任意 | `{{TIMEZONE}}`（既定 `Asia/Tokyo`） | コンテナのタイムゾーンと Web UI の日時表示・週区切り |
 | `NIKI_VAULT` | 任意 | `pkm` | Compose プロジェクト名サフィックス |
 | `NIKI_APP_PORT` | 任意 | `8000` | `rss-triage-app` 公開ポート |
 | `NIKI_UID` / `NIKI_GID` | 推奨 | `1000` / `1000` | コンテナ実行 UID/GID（バンドル所有者と一致させる） |
 | `NIKI_VAULT_NAME` | 任意 | `pkm` | Obsidian `obsidian://open` 用の Vault 名 |
 | `NIKI_REVIEWER` | 推奨 | `human:{{USER_ID}}` | 再レビュー画面「承認する」のアクター名 |
 | `NIKI_CRAWL_INTERVAL` | 任意 | `120` | ソース巡回間隔の既定値（分） |
+| `NIKI_CRAWL_ON_START` | 任意 | `1` | 起動直後に1回巡回する（`0` で無効） |
 | `NIKI_ARCHIVE_DAYS` | 任意 | `7` | 未読自動アーカイブ日数 |
+| `NIKI_FETCH_FULLTEXT` | 任意 | `1` | 記事ページから本文を抽出する（`0` でフィードの要約のみ） |
+| `NIKI_USER_AGENT` | 任意 | 空（アプリ既定の UA） | 巡回時の User-Agent |
+| `NIKI_SCHEDULER` | 任意 | `1` | `0` でバックグラウンド巡回を止める（テスト用。Compose では渡さない） |
 | `HERMES_INTERVAL` / `HERMES_LIMIT` | 任意 | `300` / `5` | Hermes 監視間隔（秒）と1回の処理上限 |
-| `HERMES_SEARXNG_URL` | 任意 | `http://searxng:8080` | Hermes が参照する SearXNG URL |
+| `HERMES_SEARXNG_URL` | 任意 | `http://searxng:8080` | Hermes が参照する SearXNG URL（コンテナでは `SEARXNG_URL` として渡す） |
 | `COMPOSE_PROFILES` | 任意 | `tools`（1バンドルのみ） | SearXNG + Open WebUI の起動制御 |
 | `SEARXNG_SECRET` | `tools`時必須 | `openssl rand -hex 32` | SearXNG 署名シークレット |
 | `NIKI_SEARXNG_PORT` / `NIKI_WEBUI_PORT` | 任意 | `8888` / `3000` | SearXNG / Open WebUI 公開ポート |
@@ -126,5 +159,5 @@ GPU メモリ帯域を最大限に使うため、Docker ではなく **ホスト
    - OKF 公式 Agent Skills（`open-knowledge-format/open-knowledge-format` の `okf-generate` / `okf-consume`）を導入。
    - バンドルルートでエージェントを起動すると `AGENTS.md` が読み込まれ、ローカルプロファイル優先で Gold 合成・コンテンツ執筆を行える。
 3. **スマホ PWA:**
-   - Tailscale 経由で `http://{{APP_HOST}}:8000/` を開き「ホーム画面に追加」。
+   - Tailscale 経由で `http://{{APP_HOST}}:8000/`（`NIKI_APP_PORT`）を開き「ホーム画面に追加」。
    - ブラウザの共有メニューから URL を直接 `/share-target` へ送ってクリップ可能。

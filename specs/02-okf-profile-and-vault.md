@@ -45,7 +45,8 @@ pkm/
 │   ├── 12_web-clipper/              # Web Clipper・PWA 共有メニューから取り込んだ記事
 │   ├── 13_quick-notes/              # 人間の手書きメモ・思考の断片
 │   ├── 14_podcast/                  # Send to PKM した Podcast 文字起こし
-│   └── 15_files/                    # PDF・Office・画像 ＋ 自動生成された <name>.extracted.md
+│   ├── 15_files/                    # PDF・Office・画像 ＋ 自動生成された <name>.extracted.md
+│   └── 19_private/                  # [Git除外] 「私的」ソースの Keep 記事・文字起こし（Silver は 28_me 固定）
 ├── 20_Literature/                   # 【Silver】OKF v0.3（カテゴリ番号 21〜29、20は予約）
 │   ├── index.md
 │   ├── 21_technology/               # 標準カテゴリ例（利用者が自由にカスタマイズ可）
@@ -80,7 +81,30 @@ pkm/
 - **ノート添付画像:** ノートと同じカテゴリフォルダ配下の `_assets/` に配置し、`./_assets/diagram.png` のように相対パス参照する（Git 管理対象。`90_Assets/` には入れない）。
 - **MoC（Map of Content）禁止:** 各階層の自動生成 `index.md` が目録を担う。キュレーション概観が必要なら通常の `concept` ノートとして作成する。
 
-### 2.2 バンドルルート `index.md`（OKF v0.3 §8.1）
+### 2.2 カテゴリ定義（テンプレートに含める）
+カテゴリの説明は2か所に置き、どちらも `hermes.py` がプロンプトへ注入する。
+
+1. **エリア `index.md` の目録行**（`20_Literature/index.md`）: テンプレートに次の書式で説明付きの行を入れておく。`build_index.py` はラベルと説明を保持して件数だけ更新し、`hermes.py` は正規表現 `^\*\s+\[[^\]]+\]\((?P<dir>\d\d_[a-z0-9-]+)/index\.md\)\s*-\s*(?P<desc>.+?)(?:（\d+ 件）)?\s*$` で読む（**この書式は2つのスクリプト間の契約**）。
+   ```markdown
+   * [Technology](21_technology/index.md) - IT・AI・ソフトウェア・ハードウェア・ネットワーク（0 件）
+   ```
+2. **`AGENTS.md` の `### 20_Literature のカテゴリ` 節**: 境界の目安を表で書く（§7）。
+
+標準カテゴリの例:
+
+| フォルダ | 入れるもの | 境界の目安 |
+| :--- | :--- | :--- |
+| `21_technology` | IT・AI・LLM・ソフトウェア・ハードウェア・ネットワーク・セキュリティ | IT 企業の業績・買収が主題なら 22 |
+| `22_politics-economy` | 政治・行政・外交・地政学・マクロ経済・市場・企業経営 | 制度運用で起きた事件・不祥事は 23 |
+| `23_society` | 事件・事故・災害・労働・福祉・教育・医療ニュース | 自分が実践する生活ノウハウは 24 |
+| `24_life` | キャリア・仕事術・家計・資産運用・住まい・健康 | ニュースではなく「自分の生活に使う知識」 |
+| `25_learning` | 勉強・語学・科学・数学・統計・歴史・学習法 | IT 分野の学問は 21 |
+| `26_culture` | スポーツ・芸能・アニメ・ゲーム・音楽・映画・本 | ゲーム開発の技術が主題なら 21 |
+| `27_` | 予備（作らない） | — |
+| `{{PRIVATE_CATEGORY}}`（`28_me`） | 自分や家族に関する情報 | Git 除外。`10_Inbox/19_private/` 由来の Silver はここに固定 |
+| `29_misc` | どれにも当てはまらないもの（**必須**: `hermes.py` の配置計画が失敗したときの受け皿） | 迷ったら主題に近いほうを選び `tags` で補う |
+
+### 2.3 バンドルルート `index.md`（OKF v0.3 §8.1）
 `okf_version` はルート `index.md` のフロントマターにのみ記述する。
 
 ```yaml
@@ -163,6 +187,11 @@ description: "RSS・Podcast・Webクリップから育てる個人用 LLM Wiki"
 
 再レビュー後に人間が `verify_note.py` または UI の「承認する」ボタンで新しい `{ by: human:{{USER_ID}}, at: <now> }` を追記してゲートを通すと、自動的に承認済みへ復帰し `lineage.jsonl` へ `review_cleared` が記録される。
 
+**lineage の記録タイミング（漏れを防ぐ設計）:**
+- `review_pending` は `build_index.py`（30分ごと）が状態変化を検知して記録する。エージェントが Gold を直接編集してゲートを実行しなかった場合も拾える。
+- `verify_note.py` は承認を書き込む**前**にもゲート（lineage 記録あり）を通し、未記録の `review_pending` を先に残してから承認する。これで `build_index.py` が回る前に承認しても `review_pending` → `review_cleared` の対が必ず残る。
+- Gold が初めてゲートに合格したとき（= 人間の初回承認）は `promoted`（`medal: "gold"`、`at` は最新の `human:` 検証時刻）を記録する。
+
 ---
 
 ## 5. パス解決規則（OKF v0.3 §6）
@@ -198,7 +227,7 @@ description: "RSS・Podcast・Webクリップから育てる個人用 LLM Wiki"
 バンドルルートに `AGENTS.md` を配置し、Claude Code / Antigravity / Hermes / Open WebUI 等すべてのエージェントに以下を明記する。
 
 1. **基本原則:** 確率論と決定論の分離、必ず `gate_okf.py` を通すこと、人間記述の不変性。
-2. **フォルダと役割一覧:** 各エリアの読み書き権限、`20_Literature/` のカテゴリ定義と境界の目安（`hermes.py` が `### 20_Literature のカテゴリ` 節を自動抽出してプロンプトに組み込むため、**この見出し構成を維持すること**）。
+2. **フォルダと役割一覧:** 各エリアの読み書き権限（`10_Inbox/19_private/` の扱いを含む）、`20_Literature/` のカテゴリ定義と境界の目安（§2.2）。`hermes.py` が `### 20_Literature のカテゴリ` 見出しから次の `##` / `###` 見出し（またはファイル末尾）までを自動抽出してプロンプトに組み込むため、**この見出し名を変えないこと**。
 3. **アクター命名表:**
    - 自律ワーカー: `hermes/gemma4-12b`（または使用モデル名）
    - 対話エージェント: `claude-code/<model>`, `antigravity/<model>` 等
@@ -217,7 +246,7 @@ description: "RSS・Podcast・Webクリップから育てる個人用 LLM Wiki"
 
 ### `pkm/.gitignore`
 - `90_Assets/*`（`!90_Assets/.gitkeep`）
-- `20_Literature/{{PRIVATE_CATEGORY}}/`（私的カテゴリを使う場合）
+- `20_Literature/{{PRIVATE_CATEGORY}}/` と `10_Inbox/19_private/`（私的区分。カテゴリの `index.md` もタイトルを含むので丸ごと除外する。テンプレートの `index.md` は `git add -f` で登録）
 - `00_System/graph/*`（`!00_System/graph/.gitkeep`）
 - `*.extracted.md`
 - `10_Inbox/15_files/**/*.{pdf,docx,xlsx,pptx,png,jpg,jpeg,webp}`

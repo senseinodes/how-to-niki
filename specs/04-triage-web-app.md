@@ -6,7 +6,7 @@
 
 ## 1. 技術制約・基本設計
 
-- **バックエンド:** Python 3.13 + FastAPI（`create_app` ファクトリパターン）+ Uvicorn + Jinja2 + httpx + feedparser + trafilatura + BeautifulSoup4。
+- **バックエンド:** Python 3.13（`python:3.13-slim` + `git` + `tzdata`）+ FastAPI（`create_app` ファクトリパターン）+ Uvicorn + Jinja2 + httpx + feedparser + trafilatura + BeautifulSoup4。
 - **フロントエンド:** HTMX（`static/vendor/htmx.min.js` にローカル同梱）+ Vanilla CSS（CSS Variables + Grid / Flexbox、ライト/ダーク両対応）+ 最小 Vanilla JS（`static/app.js`）。ビルドツール一切不要。
 - **PKM スクリプトの再利用:** イメージ内に PKM スクリプトを複製せず、コンテナへマウントした `{{PKM_ROOT}}/00_System/scripts/` を `sys.path` に追加して動的 import する（`pkm.py`）。
 - **データベース分離:**
@@ -14,6 +14,7 @@
   - `00_System/pkm.sqlite`: `file:<path>?mode=ro` の**読み取り専用**で開く（存在しない・破損時でもアプリは落ちずに動く）。
   - `00_System/hermes.sqlite`: ダッシュボード集計時のみ読み取り専用で開く。
   - `index.md` / `log.md` / `lineage.jsonl` をアプリから直接書かない（承認時のみ `verify_note.py` を呼ぶ）。
+- **タイムゾーン:** 画面の日時表示とダッシュボードの週区切りは `TZ` 環境変数（既定 `Asia/Tokyo`）から `zoneinfo.ZoneInfo` で決める（`settings.local_tz()`）。イメージに `tzdata` を入れ、見つからない場合も `Asia/Tokyo` は UTC+9 に、それ以外は UTC にフォールバックする。オフセットを直書きしない。
 - **スケジューラ:** FastAPI の `lifespan` 内で15分刻み（`SCHEDULER_TICK = 900s`）のバックグラウンドループを起動し、ソースごとの `interval_min` を過ぎたものだけ巡回する（`NIKI_SCHEDULER=0` で無効化可）。また起動時に途中で止まった Podcast の `running` 状態を `queued` に戻し、文字起こしワーカーを起動する。
 
 ---
@@ -135,6 +136,7 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
 
 ### 3.6 トリアージ＆Bronze 保存 (`triage.py`, `inbox.py`)
 - **Keep:** 非 Podcast アイテムを `10_Inbox/11_rss/YYYY-MM-DD-<slug>.md` に保存（`open(..., "x")` で絶対上書きしない、衝突時は `-2`, `-3`）。
+  - **私的ソース（`sources.private == 1`）の記事は `10_Inbox/19_private/` に保存する**（`inbox.inbox_dir(kind, private)` で決める。Git 除外・Hermes は `28_me` 固定・SearXNG 調査なし）。
   - フロントマター: `title`, `source`, `author?`, `published?`, `created`, `x-pkm-source-name`, `x-pkm-collector: rss-triage-app`, `x-pkm-score?`, `x-pkm-summary?`, `x-pkm-my-comment?`（**`type` キーは絶対に含めない**）。
 - **Dismiss / 一括 Dismiss:** ステータスを `dismissed` に変更し、`actions` の ID をトーストの「元に戻す（Undo）」ボタンへ渡す。
 - **Undo / Restore:** Dismiss / Archive を元に戻す。Restore 時は学習例から外すため `actions.undone = 1` にする。
@@ -143,8 +145,8 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
 - `[Send to PKM]` 押下時に `transcript_status = 'queued'` に積む。排他ロック付きバックグラウンドスレッドが1件ずつ処理。
 - 優先順位:
   1. `transcript_url` がある → 取得して形式別パース（Podcasting 2.0 JSON の `segments[]`、WebVTT / SRT からタイムスタンプ除去＆ `<v 話者>` 保持、HTML/プレーンテキスト）。`transcript_method = "published"`。
-  2. `audio_url` がある → `tempfile.TemporaryDirectory` へストリーミング DL（上限 600MB）→ `POST {{INFERENCE_HOST}}/v1/audio/transcriptions`（`model="whisper"`, `language="{{PRIMARY_LANG}}"`, タイムアウト 3600s）→ **一時ディレクトリ削除で元音声を確実消去**。`transcript_method = "whisper"`。
-- 結果を `10_Inbox/14_podcast/YYYY-MM-DD-<slug>.md` へ保存（ショーノート＋文字起こし本文、`x-pkm-transcript` / `x-pkm-duration-sec` 付き、`type` なし）し、`status = 'kept'`, `transcript_status = 'done'` に更新。
+  2. `audio_url` がある → `tempfile.TemporaryDirectory` へストリーミング DL（上限 600MB）→ `POST ${MAC_MINI_URL}/v1/audio/transcriptions`（`model="whisper"`, `language="ja"`（`{{PRIMARY_LANG}}`）, `response_format="json"`, ヘッダー `Authorization: Bearer ${PKM_API_KEY}`, タイムアウト 3600s・接続 10s）→ **一時ディレクトリ削除で元音声を確実消去**。`transcript_method = "whisper"`。
+- 結果を `10_Inbox/14_podcast/YYYY-MM-DD-<slug>.md`（私的ソースは `10_Inbox/19_private/`）へ保存（ショーノート＋文字起こし本文、`x-pkm-transcript` / `x-pkm-duration-sec` 付き、`type` なし）し、`status = 'kept'`, `transcript_status = 'done'` に更新。
 - 失敗時は `transcript_status = 'failed'` と `transcript_error` を保存し、画面から再試行可能にする。
 
 ### 3.8 外部共有 (`share.py`)
@@ -153,7 +155,7 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
   - **X:** 公式 CLI `xurl -X POST /2/tweets -d '{"text": ...}'`（280文字上限チェック）。`NIKI_XURL` が実行可能なときのみ有効。
 - **安全ガード:**
   - 確認ダイアログの `confirm="yes"` がなければ拒否。
-  - `sources.private == 1` または `kept_path` が `20_Literature/{{PRIVATE_CATEGORY}}/` で始まる場合は絶対に送信拒否。
+  - `sources.private == 1` または `kept_path` が `PRIVATE_PREFIXES = ("10_Inbox/19_private/", "20_Literature/{{PRIVATE_CATEGORY}}/")` のいずれかで始まる場合は絶対に送信拒否（判定は `share.is_private_path` に一本化し、Share ダイアログ表示と送信の両方で使う）。私的ソースの Keep は `19_private/` に入るので、パス判定はソースのフラグと独立した二重の防御になる。
 
 ### 3.9 PWA スマホ共有クリップ (`clip.py`)
 - `manifest.webmanifest` に `share_target`（`GET /share-target?title=&text=&url=`）と最小の Service Worker（`/sw.js`、静的ファイルのみキャッシュ、画面 HTML は常にネットワーク取得）を配置。
@@ -185,7 +187,7 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
    - サイドバー: 手動解除コマンドと最近の `lineage.jsonl` 履歴（直近15件）。
 4. **ダッシュボード (`/dashboard`):**
    - 層別件数（Bronze / Silver / Gold / 再レビュー待ち＋今週増分、サイドカー除外）。
-   - 直近8週間の層別新規ノート棒グラフ（JST 月曜始まり）。
+   - 直近8週間の層別新規ノート棒グラフ（`TZ` のローカル時刻で月曜始まり）。
    - 今週の流れ（取得 → Keep / Keep率 / Dismiss → Silver 昇格 → Gold 合成、Podcast 文字起こし数、Hermes ゲート自己修復回数）。
    - タグ別ランキング上位10（期間切替 `week` / `30d` / `all` の HTMX 部分更新、前期比増減、タグクリックで `/search` 遷移）。
    - フォルダ別件数表（実在フォルダから動的生成）。

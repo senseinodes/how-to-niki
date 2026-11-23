@@ -45,23 +45,23 @@
 
 以下のカスタマイズシートを埋めておくと、AI エージェントが迷わずあなたの環境向けのコード・設定を生成できます。未定の項目は既定値のままで構いません。
 
-| プレースホルダー | 意味 | 既定値 / 例 |
-| :--- | :--- | :--- |
-| `{{PROJECT_NAME}}` | 開発リポジトリ名・アプリ表示名 | `my-pkm`（例: `niki`） |
-| `{{USER_ID}}` | 人間アクター ID（`human:{{USER_ID}}` に使用） | `alice`（英小文字・数字・`-`・`_`） |
-| `{{LINUX_USER}}` | 常時稼働サーバーの OS ユーザー名 | `alice` |
-| `{{VAULT_NAME}}` | PKM バンドル名・Obsidian Vault 名 | `pkm` |
-| `{{PKM_ROOT}}` | サーバー上の PKM バンドル配置先 | `/srv/pkm` |
-| `{{REPO_DIR}}` | サーバー上の開発リポジトリ配置先 | `/opt/{{PROJECT_NAME}}` |
-| `{{INFERENCE_HOST}}` | 推論サーバーのホスト名または IP（Tailscale 推奨） | `http://gpu-node:8080` |
-| `{{APP_HOST}}` | Web アプリ稼働サーバーのホスト名または IP | `http://server-node:8000` |
-| `{{TIMEZONE}}` | タイムゾーン | `Asia/Tokyo` |
-| `{{PRIMARY_LANG}}` | 主言語（プロンプト・Whisper・SearXNG の既定） | `ja` |
-| `{{PRIVATE_CATEGORY}}` | Git / lineage / Share から除外する私的カテゴリ | `28_me`（不要なら無効化可） |
-| `{{CATEGORIES}}` | `20_Literature/` 配下のカテゴリ構成（21〜29） | [02-okf-profile-and-vault.md](specs/02-okf-profile-and-vault.md) の標準8カテゴリ |
-| `{{OUTPUT_DIRS}}` | `60_Output/` 配下の成果物フォルダ | `61_youtube`, `62_note`（例: `61_blog`, `62_slides` 等） |
-| `{{TOPOLOGY}}` | ハードウェア構成パターン | `A: 常時稼働Linux + GPU/Mac推論機` / `B: GPU付きLinux 1台完結` / `C: クラウドAPI併用` |
-| `{{ENABLE_SHARE}}` | 外部共有（はてなブックマーク / X）を使うか | `不要` / `はてブのみ` / `両方` |
+| プレースホルダー | 意味 | 既定値 / 例 | 主な反映先 |
+| :--- | :--- | :--- | :--- |
+| `{{PROJECT_NAME}}` | 開発リポジトリ名・アプリ表示名・systemd ユニット接頭辞 | `my-pkm`（例: `niki`） | 05 §2 |
+| `{{USER_ID}}` | 人間アクター ID（`human:{{USER_ID}}` に使用） | `alice`（英小文字・数字・`-`・`_`） | 02 §4, 05 `NIKI_REVIEWER` |
+| `{{LINUX_USER}}` | 常時稼働サーバーの OS ユーザー名（バンドル所有者・systemd の `User=`） | `alice` | 05 §2.3, `NIKI_UID/GID` |
+| `{{VAULT_NAME}}` | PKM バンドル名・Obsidian Vault 名（systemd テンプレートの `%i`） | `pkm` | 05 §2 |
+| `{{PKM_ROOT}}` | サーバー上の PKM バンドル配置先。**systemd テンプレートを使うため `/srv/{{VAULT_NAME}}` 固定** | `/srv/pkm` | 05 §2.1 |
+| `{{REPO_DIR}}` | サーバー上の開発リポジトリ配置先 | `/opt/{{PROJECT_NAME}}` | 05 §2.1 |
+| `{{INFERENCE_HOST}}` | 推論サーバーの**ホスト名または IP のみ**（スキーム・ポートは付けない。Tailscale 推奨） | `gpu-node` | `MAC_MINI_URL=http://{{INFERENCE_HOST}}:8080` |
+| `{{APP_HOST}}` | Web アプリ稼働サーバーの**ホスト名または IP のみ** | `server-node` | `http://{{APP_HOST}}:8000/` |
+| `{{TIMEZONE}}` | タイムゾーン（IANA 名） | `Asia/Tokyo` | 05 `TZ` |
+| `{{PRIMARY_LANG}}` | 主言語。**オリジナル実装は `ja` 固定**（変える場合の箇所は 06 §3 Gotcha 15） | `ja` | Whisper・SearXNG・各プロンプト |
+| `{{PRIVATE_CATEGORY}}` | Git / lineage / Share から除外する私的カテゴリ | `28_me` | 02 §2, 04 §3.6 |
+| `{{CATEGORIES}}` | `20_Literature/` 配下のカテゴリ構成（21〜29。受け皿の `29_misc` は必須） | [02](specs/02-okf-profile-and-vault.md) §2.2 の標準8カテゴリ | 02 §2, `AGENTS.md` |
+| `{{OUTPUT_DIRS}}` | `60_Output/` 配下の成果物フォルダ | `61_youtube`, `62_note`（例: `61_blog`, `62_slides` 等） | 02 §2 |
+| `{{TOPOLOGY}}` | ハードウェア構成パターン | `A` / `B`（[01](specs/01-architecture.md) §4。`C` は参考扱い） | 01 §4, 05 §1 |
+| `{{ENABLE_SHARE}}` | 外部共有（はてなブックマーク / X）を使うか | `不要` / `はてブのみ` / `両方` | 04 §3.8, 05 `HATENA_*`/`NIKI_XURL` |
 
 ### ステップ 2: AI エージェントに構築を依頼する
 
@@ -69,8 +69,91 @@
 2. [PROMPT.md](PROMPT.md) のプロンプトに上記パラメータを記入し、AI エージェントに投入します。
 3. **Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5** の順に、各 Phase のテストと完了条件（DoD）を確認しながら段階的に進めてください。
 
+> **2つのリポジトリ:** 開発リポジトリ（`{{PROJECT_NAME}}`。コード・テスト・テンプレート `pkm/`）と、サーバー上の PKM バンドル（`{{PKM_ROOT}}`。テンプレートを展開した**別の private Git リポジトリ**）は別物です。スクリプトを更新したらバンドル側の `00_System/` へコピーしてコミットします（[05](specs/05-inference-and-deploy.md) §2.1）。
+
 ---
 
 ## ライセンス・利用方針
 
 本仕様書群はテンプレート・設計リファレンスとして自由に改変・再利用できます。構築するシステムで外部サイトをスクレイピングする際は、対象サイトの `robots.txt` と利用規約を遵守してください。
+
+---
+
+# how-to-niki — Autonomous PKM & Triage Pipeline Specification (English)
+
+This directory contains a complete set of specifications enabling anyone to rebuild a **zero-API-cost local-inference × deterministic code-controlled, non-decaying personal knowledge base (LLM Wiki)** from scratch by handing them to an AI coding agent (Claude Code, Antigravity, Cursor, Codex, etc.).
+
+The design philosophy, data structures, script contracts, web application, deployment architecture, and real-world operational gotchas of the original implementation (`niki`) have been stripped of personal environment values and organized as a reusable general-purpose specification.
+
+---
+
+## What This System Achieves
+
+1. **Zero-API-Cost Collection & First-Pass Triage:**
+   - Periodically crawls RSS / Atom feeds, non-RSS websites (with AI-inferred CSS selectors), and Podcasts.
+   - Uses a local LLM to automatically generate an interest score (0–100) and a 3-line summary for each article, learning your preferences from your Keep / Dismiss history.
+   - Performs lightweight triage on Podcasts using show notes only, and runs lazy transcription (fetching publisher transcripts or transcribing locally via `whisper.cpp`) exclusively for episodes you explicitly choose to ingest.
+2. **Non-Decaying Medallion LLM Wiki (OKF v0.3 Compliant):**
+   - **Bronze (`10_Inbox/`)**: Raw data (non-OKF). PDFs, Office files, and images automatically get searchable sidecars (`.extracted.md`) via `MarkItDown` + a local VLM.
+   - **Silver (`20_Literature/`)**: An autonomous worker (Hermes) performs background research via a metasearch engine (SearXNG), converts items into OKF notes, and self-repairs until they pass the Pydantic gate (`gate_okf.py`).
+   - **Gold (`50_Knowledge/`)**: Permanent knowledge synthesized through human + AI agent dialogue citing Silver notes, stamped with human approval (`human:<id>`). If an AI edits a Gold note later, the system automatically detects "review pending" and displays a badge in the UI.
+   - **Output (`60_Output/`)**: Deliverables (articles, scripts, etc.) generated from Gold notes and the human's primary reactions (`x-pkm-my-comment`).
+3. **Single-SQLite Full-Layer Hybrid Search + Silver/Gold-Only Knowledge Graph:**
+   - Without standing up heavy external vector databases, a single SQLite file (`FTS5` trigram + `sqlite-vec` 768-dim vectors) provides trust-tier-weighted hybrid search across Bronze through Gold.
+   - Generates a knowledge graph strictly from gate-passing Silver / Gold notes.
+4. **Build-Free Lightweight Web UI (PWA-Enabled):**
+   - FastAPI + Jinja2 + HTMX + Vanilla CSS (no Node.js build step). Supports PWA installation so you can clip web pages directly from your smartphone's share menu.
+
+---
+
+## Specification Index
+
+| File | Contents | Primary Reference Timing |
+| :--- | :--- | :--- |
+| [en/PROMPT.md](en/PROMPT.md) | Ready-to-use build prompts to hand directly to an AI agent | Project kickoff & start of each Phase |
+| [en/specs/01-architecture.md](en/specs/01-architecture.md) | Design philosophy, Do's & Don'ts, hardware topology patterns, sync & backup strategy | Overall architecture & upfront alignment |
+| [en/specs/02-okf-profile-and-vault.md](en/specs/02-okf-profile-and-vault.md) | PKM bundle layout, complete OKF v0.3 Local Profile schema, derived values, 7 gate rules, `AGENTS.md` spec | Phase 1 (Foundation & Gate) |
+| [en/specs/03-guardians-and-pipeline.md](en/specs/03-guardians-and-pipeline.md) | Specs for all 11 deterministic scripts, SQLite schemas, CLI & exit-code contracts | Phase 1, 3, 4 |
+| [en/specs/04-triage-web-app.md](en/specs/04-triage-web-app.md) | All 5 screens of `rss-triage-app`, HTTP endpoints, DB schema, crawler, AI selectors, Podcast lazy transcription, Share, PWA spec | Phase 4 (Web App) |
+| [en/specs/05-inference-and-deploy.md](en/specs/05-inference-and-deploy.md) | Local inference server (`llama-swap` + `llama.cpp` + `whisper.cpp`), Docker Compose, systemd timers, SearXNG, Open WebUI, env var reference | Phase 2, 5 (Infra & Operations) |
+| [en/specs/06-implementation-and-tests.md](en/specs/06-implementation-and-tests.md) | Phase 1–5 implementation roadmap, Definition of Done (DoD), test specs, operational gotchas | Implementation & verification of all Phases |
+
+---
+
+## Quick Start (How to Instruct an AI Agent)
+
+### Step 1: Choose Parameters for Your Environment
+
+Filling out the customization sheet below lets the AI agent generate code and configuration tailored to your environment without guesswork. Leave any undecided fields at their defaults.
+
+| Placeholder | Meaning | Default / Example | Primary Targets |
+| :--- | :--- | :--- | :--- |
+| `{{PROJECT_NAME}}` | Dev repository name, app display name, systemd unit prefix | `my-pkm` (e.g., `niki`) | 05 §2 |
+| `{{USER_ID}}` | Human actor ID (used in `human:{{USER_ID}}`) | `alice` (lowercase letters, digits, `-`, `_`) | 02 §4, 05 `NIKI_REVIEWER` |
+| `{{LINUX_USER}}` | OS username on the always-on server (bundle owner & systemd `User=`) | `alice` | 05 §2.3, `NIKI_UID/GID` |
+| `{{VAULT_NAME}}` | PKM bundle name / Obsidian Vault name (`%i` in systemd templates) | `pkm` | 05 §2 |
+| `{{PKM_ROOT}}` | PKM bundle path on the server. **Fixed to `/srv/{{VAULT_NAME}}` because systemd templates are used** | `/srv/pkm` | 05 §2.1 |
+| `{{REPO_DIR}}` | Dev repository path on the server | `/opt/{{PROJECT_NAME}}` | 05 §2.1 |
+| `{{INFERENCE_HOST}}` | Inference server **hostname or IP only** (no scheme or port; Tailscale recommended) | `gpu-node` | `MAC_MINI_URL=http://{{INFERENCE_HOST}}:8080` |
+| `{{APP_HOST}}` | Web app server **hostname or IP only** | `server-node` | `http://{{APP_HOST}}:8000/` |
+| `{{TIMEZONE}}` | Timezone (IANA name) | `Asia/Tokyo` | 05 `TZ` |
+| `{{PRIMARY_LANG}}` | Primary language. **The original implementation hardcodes `ja`** (see 06 §3 Gotcha 15 for places to change) | `ja` | Whisper, SearXNG, LLM prompts |
+| `{{PRIVATE_CATEGORY}}` | Private category excluded from Git / lineage / Share | `28_me` | 02 §2, 04 §3.6 |
+| `{{CATEGORIES}}` | Category layout under `20_Literature/` (21–29; fallback `29_misc` is required) | 8 standard categories in [02](en/specs/02-okf-profile-and-vault.md) §2.2 | 02 §2, `AGENTS.md` |
+| `{{OUTPUT_DIRS}}` | Deliverable folders under `60_Output/` | `61_youtube`, `62_note` (e.g., `61_blog`, `62_slides`) | 02 §2 |
+| `{{TOPOLOGY}}` | Hardware topology pattern | `A` / `B` ([01](en/specs/01-architecture.md) §4; `C` is reference-only) | 01 §4, 05 §1 |
+| `{{ENABLE_SHARE}}` | Whether to use external sharing (Hatena Bookmark / X) | `None` / `Hatena only` / `Both` | 04 §3.8, 05 `HATENA_*`/`NIKI_XURL` |
+
+### Step 2: Ask an AI Agent to Build It
+
+1. Prepare a new empty repository (e.g., `{{PROJECT_NAME}}/`) with access to this `how-to-niki/` directory.
+2. Fill in the parameters above in the prompts from [en/PROMPT.md](en/PROMPT.md) and send them to your AI agent.
+3. Proceed step by step in order — **Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5** — verifying each Phase's tests and Definition of Done (DoD) before moving on.
+
+> **Two separate repositories:** The dev repository (`{{PROJECT_NAME}}`: code, tests, template `pkm/`) and the PKM bundle on the server (`{{PKM_ROOT}}`: a **separate private Git repository** initialized from the template) are distinct. Whenever you update scripts in the dev repo, copy them into `00_System/` on the bundle side and commit them there ([05](en/specs/05-inference-and-deploy.md) §2.1).
+
+---
+
+## License & Usage Policy
+
+You are free to modify and reuse these specifications as templates and design references. When scraping external websites with the system you build, please comply with each target site's `robots.txt` and terms of service.

@@ -15,7 +15,8 @@
 - **完了条件（DoD）:**
   - 正常な Silver / Gold ノートが `gate_okf.py` を通過し、`--fix` で未知キーと並び順を壊さず `x-pkm-medal` が記入される。
   - 以下のエラーを正確に検出できる: Bronze への `type` 付与、カテゴリ番号範囲外、禁止文字ファイル名、旧キー残存、不正タグ/重複/予約語タグ、不正アクター、リンク切れ・バンドル外パス、Gold の直置き・未承認、エージェントによる `x-pkm-my-comment` 改変や `verified` 改ざん。
-  - Gold の検証失効がエラーではなく `review_pending` になり、`verify_note.py` で承認すると `review_cleared` に復帰する。
+  - Gold の検証失効がエラーではなく `review_pending` になり、`verify_note.py` で承認すると `review_cleared` に復帰する。`review_pending` が未記録のまま `verify_note.py` を実行しても、`review_pending` → `review_cleared` の順で両方記録される。
+  - Silver / Gold の初回合格で `promoted` が1回だけ記録される（Gold は `medal: "gold"`、`at` = 最新の `human:` 検証時刻）。`lineage.jsonl` への書き込みは `flock` 下で状態を読み直してから行う。
   - `autocommit.py` がゲート不合格ファイルだけステージから外して残りをコミットできる。
 
 ### Phase 2: 推論サーバー基盤 & LLM クライアント
@@ -35,6 +36,7 @@
   - `pkm.sqlite` への `FTS5 (trigram)` + `sqlite-vec (768d)` 差分登録、3文字未満の `LIKE` フォールバック、RRF＋トラストティア重み順（Gold > Silver = 再レビュー待ち Gold > Bronze）が動作する。
   - 推論機オフライン時でも `build_index.py` は FTS 登録まで完了し、`search.py` は FTS フォールバックで結果を返す。
   - `index.md`（ルートフロントマター保持）と `log.md`（日付降順）が変更時のみ決定論的に書き出される。
+  - `build_index.py` がゲート済み Silver / Gold の lineage を `log.md` 生成前に記録する（エージェントが Gold を直接編集したら次の実行で `review_pending` が残る。`--no-lineage` で無効）。
   - `run_graphify.py` が合格 Silver/Gold のみから `graph.json` と `manifest.json` を生成し、入力不変時はスキップする。
 
 ### Phase 4: トリアージ Web アプリ (`rss-triage-app`) ＆ 自律ワーカー (`hermes.py`)
@@ -49,7 +51,9 @@
     - 非 RSS サイトの AI セレクタ推定・プレビュー・再推定
     - Podcast 遅延文字起こし（巡回時に音声 DL しないこと、`<podcast:transcript>` 優先、未搭載時の `whisper` 呼び出し＆一時音声削除）
     - 統合検索・関連ノート・再レビュー差分＆承認・ダッシュボード集計
-    - Share 確認ガードと私的ソース/`28_me` の送信拒否
+    - Share 確認ガードと私的ソース/`19_private`/`28_me` の送信拒否
+    - 私的ソースの Keep・文字起こしが `10_Inbox/19_private/` に保存され、Hermes がそれを `28_me` に固定して SearXNG を呼ばないこと
+    - `TZ` に応じた日時表示（`zoneinfo`。未知の TZ は UTC）
     - PWA マニフェスト・Service Worker・`/share-target` クリップ
   - `docker build` で `sqlite-vec` ロード確認が通る。
 
@@ -59,7 +63,7 @@
   - `deploy/server/`（`pkm.env.example`, `searxng/settings.yml`, `systemd/*`, `README.md`）
   - ルート `README.md`
 - **完了条件（DoD）:**
-  - `docker-compose.yml` と systemd ユニット・`searxng/settings.yml` の整合性テストが通る。
+  - `docker-compose.yml` と systemd ユニット・`searxng/settings.yml` の整合性テストが通る（`pkm.env.example` の全変数が Compose で参照されている、アプリ・LLM 設定変数がコンテナへ渡っている、Open WebUI が `PKM_MODEL_REVIEW` / `PKM_API_KEY` に従う、全 systemd ユニットが `@` テンプレートで `/srv/%i` と `%i.env` を使う）。
   - `uv run pytest` が CI（GitHub Actions）含め全件パスする。
 
 ---
@@ -71,9 +75,9 @@
 | ディレクトリ | テストファイル例 | 主な検証観点 |
 | :--- | :--- | :--- |
 | `tests/schemas/` | `test_okf_v03.py` | MUST/SHOULD/任意キー、旧キー拒否、タイムスタンプ正規化、順序非依存トラストティア、パス解決（ルート基準/ファイル基準/外部拒否/デコード）、保護フィールド比較 |
-| `tests/scripts/` | `test_pkm_config.py`, `test_gate_okf.py`, `test_lint_wiki.py`, `test_verify_note.py`, `test_autocommit.py`, `test_gemma_client.py`, `test_build_index.py`, `test_tag_stats.py`, `test_hermes.py`, `test_run_graphify.py` | ルール1〜7網羅、生 YAML 編集の未知キー/順序保持、git 除外ファイルの lineage 非記録、`--save-db`、自己修復リトライ＆ロールバック、サイドカー差分＆Office日付、FTS5+vec+3文字未満LIKE、RRF重み付け、Hermes 接続断時の非記録スキップ、グラフの Bronze 除外 |
+| `tests/scripts/` | `test_pkm_config.py`, `test_gate_okf.py`, `test_lint_wiki.py`, `test_verify_note.py`, `test_autocommit.py`, `test_gemma_client.py`, `test_build_index.py`, `test_tag_stats.py`, `test_hermes.py`, `test_run_graphify.py` | ルール1〜7網羅、生 YAML 編集の未知キー/順序保持、git 除外ファイルの lineage 非記録、Gold の `promoted`・未記録 `review_pending` の補完・lineage の排他ロック、`build_index` による lineage 記録、`PKM_API_KEY` の伝播、Hermes の私的 Bronze 処理と `AGENTS.md` 末尾の節の抽出、`--save-db`、自己修復リトライ＆ロールバック、サイドカー差分＆Office日付、FTS5+vec+3文字未満LIKE、RRF重み付け、Hermes 接続断時の非記録スキップ、グラフの Bronze 除外 |
 | `tests/apps/` | `test_rss_triage_core.py`, `test_rss_triage_web.py`, `test_rss_triage_pages.py`, `test_rss_triage_sites.py`, `test_rss_triage_podcast.py` | 巡回/採点/Keep/Undo/Archive、FastAPI TestClient による全5画面・HTMX 応答・OOB 削除、AI セレクタ、Podcast 遅延文字起こし＆一時ファイル消去、Share OAuth 署名・私的ガード、PWA share_target |
-| `tests/deploy/` | `test_inference_config.py`, `test_server_compose.py` | `llama-swap` config の `ttl: 300`・グループ設定・全モデルID、`docker-compose.yml` のボリューム・環境変数・`PKM_ENV_FILE=/nonexistent`・SearXNG JSON フォーマット有効化 |
+| `tests/deploy/` | `test_inference_config.py`, `test_server_compose.py` | `llama-swap` config の `ttl: 300`・グループ設定・全モデルID、`docker-compose.yml` のボリューム・環境変数（env 例との突き合わせ）・`PKM_ENV_FILE=/nonexistent`・SearXNG JSON フォーマット有効化、systemd 全ユニットのテンプレート化と夜間ジョブの順序 |
 
 ---
 
@@ -105,7 +109,19 @@
     人間承認後に `process:lint-wiki` が追記されると末尾が `process:` になり誤って失効扱いになる。必ず「`at >= generated.at` の全イベントの中に `human:` が含まれるか」で判定する。
 11. **書式修正・リンク修復での `generated.at` 更新禁止:**
     意味の変わらない修正で `generated.at` を進めると、承認済み Gold が意図せず「再レビュー待ち」に落ちてしまう。
-12. **私的カテゴリ（`28_me`）の多層防御:**
-    `.gitignore` に書くだけでは不十分。`lineage.jsonl` / `log.md`（Git コミットされる）へのメタデータ漏洩を防ぐ `git check-ignore` 連携と、Web UI 側での Share ブロック（パス判定＋ソースの `private` フラグ）をセットで実装する。
+12. **私的区分（`19_private` / `28_me`）の多層防御:**
+    `.gitignore` に書くだけでは不十分。次をセットで実装する。
+    - 私的ソースの Keep 先を Git 管理下の `11_rss/` ではなく `.gitignore` 済みの `10_Inbox/19_private/` にする（Silver 側だけ除外しても Bronze が GitHub に上がる）。
+    - `lineage.jsonl` / `log.md`（Git コミットされる）へのメタデータ漏洩を防ぐ `git check-ignore` 連携。
+    - Hermes で私的 Bronze の検索語を SearXNG（外部検索エンジン）へ送らない。
+    - Web UI の Share ブロック（ソースの `private` フラグ＋`19_private/`・`28_me/` のパス判定）。Keep 先が `10_Inbox/` しかないのに `20_Literature/28_me/` だけをパス判定しても一度も成立しない点に注意。
 13. **Syncthing での `.git` 同期禁止:**
     `.git` を複数端末で同期するとコンフリクトファイルが発生してリポジトリが壊れる。`.stignore` で `.git` と `*.sqlite*` を必ず除外し、Git 管理は常時稼働サーバー1台のみで行う。
+14. **Compose の `--env-file` はコンテナに値を渡さない:**
+    `docker compose --env-file X` は Compose ファイル中の `${VAR}` 展開に使うだけ。`environment:` に書いていない変数は env ファイルに書いても無視される（`NIKI_ARCHIVE_DAYS` や `PKM_MODEL_*` が効かない）。必要な変数を既定値付きで列挙し、env 例との突き合わせテストで漏れを防ぐ。
+15. **言語の固定箇所（`{{PRIMARY_LANG}}` を `ja` 以外にする場合）:**
+    オリジナルは `ja` 固定。変更する場合は次を揃える: llama-swap の whisper `--language`、`podcast.py` の `language`、`hermes.py` の SearXNG `language`、`searxng/settings.yml` の `default_lang` / `default_locale`、各 LLM プロンプト（`scoring.py`, `hermes.py`, `gemma_client.py`）、`okf_v03.py` の `x-pkm-lang` の既定値と許可値。
+16. **lineage の記録漏れ:**
+    lineage を書くのが手動のゲート実行だけだと、エージェントがゲートを実行せずに Gold を編集したとき `review_pending` が残らず、承認しても `review_cleared` が残らない。定期実行される `build_index.py` で状態変化を記録し、`verify_note.py` は承認前にもゲートを通す。複数プロセス（Hermes コンテナとホストの timer）が書くので `flock` とロック後の状態再読込が必須。
+17. **構成 B（1台完結）の推論 URL:**
+    env ファイルは systemd（ホスト）と Compose（コンテナ）で共用する。`localhost` はコンテナ内では自分自身、`host.docker.internal` は Linux ホストからは引けない。ホストの LAN / Tailscale IP を使う。

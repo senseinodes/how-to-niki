@@ -21,10 +21,12 @@
 - VAULT_NAME: {{VAULT_NAME}}
 - PKM_ROOT: {{PKM_ROOT}}
 - REPO_DIR: {{REPO_DIR}}
-- INFERENCE_HOST: {{INFERENCE_HOST}}
+- INFERENCE_HOST: {{INFERENCE_HOST}}（ホスト名/IP のみ）
+- APP_HOST: {{APP_HOST}}（ホスト名/IP のみ）
 - TIMEZONE: {{TIMEZONE}}
 - PRIMARY_LANG: {{PRIMARY_LANG}}
-- TOPOLOGY: {{A: 2台構成 / B: 1台完結 / C: クラウドAPI併用}}
+- PRIVATE_CATEGORY: {{PRIVATE_CATEGORY}}
+- TOPOLOGY: {{A: 2台構成 / B: 1台完結}}
 - CATEGORIES: {{標準構成 / カスタム一覧}}
 - OUTPUT_DIRS: {{標準構成 / カスタム一覧}}
 - ENABLE_SHARE: {{不要 / はてブ / X / 両方}}
@@ -88,7 +90,7 @@ Phase 3 を実装してください。
 - `how-to-niki/specs/06-implementation-and-tests.md`（Phase 3 の DoD と Gotchas）
 
 実装物:
-1. `pkm/00_System/scripts/build_index.py`（MarkItDown サイドカー抽出・SQLite FTS5 trigram + sqlite-vec 差分同期・全階層 `index.md` 生成・`log.md` 生成）
+1. `pkm/00_System/scripts/build_index.py`（MarkItDown サイドカー抽出・SQLite FTS5 trigram + sqlite-vec 差分同期・全階層 `index.md` 生成・`gate_okf.record_lineage` による lineage 記録・`log.md` 生成）
 2. `pkm/00_System/scripts/search.py`（RRF ハイブリッド検索・トラストティア重み付け・3文字未満 LIKE フォールバック・再レビュー待ち一覧）
 3. `pkm/00_System/scripts/tag_stats.py`（期間別タグランキングと前期比増減）
 4. `pkm/00_System/scripts/run_graphify.py`（ゲート合格 Silver/Gold 限定の決定論 `graph.json` 生成＋任意 Graphify CLI 連携）
@@ -114,6 +116,7 @@ Phase 4 を実装してください。
 2. `apps/rss_triage/` 一式（`Dockerfile`, `README.md`, `rss_triage/*.py`, `templates/*.html`, `static/app.css`, `static/app.js`, `static/manifest.webmanifest`, `static/sw.js`, `static/icon.svg`, `static/vendor/htmx.min.js`）
    - CSS フレームワークや JS ビルドツールは使わず、ライト/ダーク対応・768px 未満のモバイル1ペイン切替・キーボードショートカットを実装すること
    - `pkm.sqlite` は読み取り専用で開き、アプリ状態は別ファイル `rss_triage.sqlite` に保存すること
+   - 「私的」ソースの Keep・文字起こしは `10_Inbox/19_private/` に保存し、Hermes・Share 側の隔離（04 §3.6–3.8）も実装すること
 3. `tests/apps/` のテスト一式（コア・Web ルート・全5画面・非 RSS サイト・Podcast 遅延文字起こし・Share 保護・PWA）
 
 完了後、`uv run pytest` で全テスト合格を確認してください。
@@ -134,9 +137,9 @@ Phase 5 を実装してください。
 2. `deploy/server/` 配下:
    - `pkm.env.example`
    - `searxng/settings.yml`（JSON API 有効化）
-   - `systemd/` ユニット一式（`build-index`, `lint-wiki`, `autocommit@`, `graphify@`, `compose@`）
-   - `README.md`（固定マウント・バンドル展開・Python/uv 環境・Docker 公式リポジトリ・systemd 有効化・Syncthing/Git 運用・スリープ無効化手順）
-3. `tests/deploy/` の Compose / 設定整合性テスト
+   - `systemd/` ユニット一式（**すべて `@` テンプレート**: `build-index@`, `lint-wiki@`, `autocommit@`, `graphify@`, `compose@`。`/srv/%i` と `/etc/{{PROJECT_NAME}}/%i.env` を使う）
+   - `README.md`（固定マウント・バンドル展開と `git init`・スクリプト更新時のバンドルへのコピー・Python/uv 環境・Docker 公式リポジトリ・systemd 有効化・Syncthing/Git 運用・スリープ無効化手順）
+3. `tests/deploy/` の Compose / 設定整合性テスト（`pkm.env.example` の全変数が Compose でコンテナへ渡されていること、全 systemd ユニットがテンプレートであることを含む）
 4. ルート `README.md` の最終更新
 
 完了後、`uv run pytest` で全テスト合格を確認し、実機デプロイのチェックリストを出力してください。
