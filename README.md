@@ -75,7 +75,7 @@
 
 ## ライセンス・利用方針
 
-本仕様書群はテンプレート・設計リファレンスとして自由に改変・再利用できます。構築するシステムで外部サイトをスクレイピングする際は、対象サイトの `robots.txt` と利用規約を遵守してください。
+本仕様書群は [MIT License](LICENSE) で公開しています。テンプレート・設計リファレンスとして自由に改変・再利用できます（オリジナル実装 `niki` 本体は別リポジトリで、ライセンスも異なります）。構築するシステムで外部サイトをスクレイピングする際は、対象サイトの `robots.txt` と利用規約を遵守してください。
 
 ---
 
@@ -156,4 +156,4 @@ Filling out the customization sheet below lets the AI agent generate code and co
 
 ## License & Usage Policy
 
-You are free to modify and reuse these specifications as templates and design references. When scraping external websites with the system you build, please comply with each target site's `robots.txt` and terms of service.
+These specifications are released under the [MIT License](LICENSE). You are free to modify and reuse them as templates and design references (the original implementation, `niki`, lives in a separate repository under a different license). When scraping external websites with the system you build, please comply with each target site's `robots.txt` and terms of service.
