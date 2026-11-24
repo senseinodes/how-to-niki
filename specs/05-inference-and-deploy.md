@@ -66,6 +66,7 @@ GPU メモリ帯域を最大限に使うため、Docker ではなく **ホスト
   ```
   ゲートのルール7（人間記述の保護）と `autocommit.py` はバンドルが Git リポジトリであることが前提（Git がないと保護が黙って無効になる）。
 - **スクリプト更新の反映:** 開発リポジトリで `pkm/00_System/{scripts,schemas,specs}/` を更新したら `{{PKM_ROOT}}/00_System/` へコピーし、バンドル側でもコミットする。コンテナもホストもバンドル側のコピーを実行する。
+- **エージェント向け指示ファイルの反映:** `pkm/AGENTS.md`・`CLAUDE.md`・`GEMINI.md` を更新したら同様にバンドル直下へコピーしてコミットする（バンドル側で `AGENTS.md` を書き足している場合は先に `diff` で確かめる）。確認は `{{PKM_ROOT}}` で `claude` を起動し `/memory` に `CLAUDE.md` と `AGENTS.md` が出ること。AI エージェントはバンドルルートで起動する（SSH でも同じ。`search.py` と `graph.json` はサーバーにしかないため）。
 - **ホストの Python 環境:** `{{REPO_DIR}}` で `uv sync --locked --no-dev` し、`sqlite-vec` のロード確認（06 §3 Gotcha 2）を行う。
 - Docker は **Docker 公式 apt リポジトリ**（`docker-ce` + `docker-compose-plugin`）を使用（snap 版は `/srv` マウント制約や自動更新再起動があるため非推奨）。
 - 24時間稼働のため OS の自動サスペンドを無効化する（`systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`）。
@@ -83,7 +84,7 @@ GPU メモリ帯域を最大限に使うため、Docker ではなく **ホスト
 
 > **ポイント:** `COMPOSE_PROFILES=tools` はサーバー上の1バンドルでのみ有効にし、2つ目のバンドルでは空にして SearXNG / Open WebUI の重複起動を避ける。2つ目のバンドルの Hermes は `HERMES_SEARXNG_URL` に1つ目の SearXNG の公開 URL（例: `http://<host>:8888`）を設定する（`http://searxng:8080` は同じ Compose プロジェクト内でしか引けない）。
 
-> **環境変数はコンテナへ明示的に渡す:** `--env-file` は Compose ファイル内の `${VAR}` の展開に使われるだけで、コンテナには入らない。`env_file:` は使わず（ホスト用の `PKM_ROOT=/srv/...` などがコンテナに入ってしまうため）、`rss-triage-app` / `hermes-agent` の `environment:` に使う変数を**既定値付きで1つずつ列挙**する。対象: `MAC_MINI_URL`, `PKM_MODEL_REVIEW/FAST/EMBED`, `PKM_LLM_TIMEOUT`, `PKM_API_KEY`, `TZ`（`${TZ:-Asia/Tokyo}`。全4サービス）、アプリのみ `NIKI_VAULT_NAME`, `NIKI_REVIEWER`, `NIKI_CRAWL_INTERVAL`, `NIKI_CRAWL_ON_START`, `NIKI_ARCHIVE_DAYS`, `NIKI_FETCH_FULLTEXT`, `NIKI_USER_AGENT`, `HATENA_*`, `NIKI_XURL`, `SYNCTHING_*`、Hermes のみ `SEARXNG_URL`, `HERMES_INTERVAL`, `HERMES_LIMIT`。`pkm.env.example` の全変数が Compose で参照されていることをテストで突き合わせる（06 §2）。
+> **環境変数はコンテナへ明示的に渡す:** `--env-file` は Compose ファイル内の `${VAR}` の展開に使われるだけで、コンテナには入らない。`env_file:` は使わず（ホスト用の `PKM_ROOT=/srv/...` などがコンテナに入ってしまうため）、`rss-triage-app` / `hermes-agent` の `environment:` に使う変数を**既定値付きで1つずつ列挙**する。対象: `MAC_MINI_URL`, `PKM_MODEL_REVIEW/FAST/EMBED`, `PKM_LLM_TIMEOUT`, `PKM_API_KEY`, `TZ`（`${TZ:-Asia/Tokyo}`。全4サービス）、アプリのみ `NIKI_VAULT_NAME`, `NIKI_REVIEWER`, `NIKI_CRAWL_INTERVAL`, `NIKI_CRAWL_ON_START`, `NIKI_ARCHIVE_DAYS`, `NIKI_FETCH_FULLTEXT`, `NIKI_USER_AGENT`, `NIKI_SCORE_WEIGHTS`, `NIKI_SCORE_TAG_LIMIT`, `NIKI_SCORE_STOP_TAGS`, `HATENA_*`, `NIKI_XURL`, `SYNCTHING_*`、Hermes のみ `SEARXNG_URL`, `HERMES_INTERVAL`, `HERMES_LIMIT`。`pkm.env.example` の全変数が Compose で参照されていることをテストで突き合わせる（06 §2。ホストの systemd だけが使う `PKM_DB`, `GRAPHIFY_CMD`, `COMPOSE_PROFILES`, `NIKI_LINKS_*` は除外リストに入れる）。
 
 ### 2.3 systemd ユニット＆タイマー一覧（ログイン不要のシステムユニット）
 
@@ -108,7 +109,7 @@ ExecStart={{REPO_DIR}}/.venv/bin/python /srv/%i/00_System/scripts/<script>.py
 | `{{PROJECT_NAME}}-build-index@.timer` | 30分ごと（`*:0/30`, `RandomizedDelaySec=60`, `Persistent=true`） | `build_index.py`（`Nice=10`, `IOSchedulingClass=idle`, `TimeoutStartSec=2h`。lineage もここで記録される） |
 | `{{PROJECT_NAME}}-autocommit@.timer` | 毎日 `02:30` | `autocommit.py`（ゲート不合格はコミットせず終了コード 1、push 失敗は 3 で失敗検知可能にする） |
 | `{{PROJECT_NAME}}-lint-wiki@.timer` | 毎日 `03:30` | `lint_wiki.py --save-db`（結果を `pkm.sqlite` へ保存してダッシュボード表示） |
-| `{{PROJECT_NAME}}-graphify@.timer` | 毎日 `04:00`（`RandomizedDelaySec=5min`） | `run_graphify.py`（`Nice=15`, `TimeoutStartSec=4h`） |
+| `{{PROJECT_NAME}}-graphify@.timer` | 毎日 `04:00`（`RandomizedDelaySec=5min`） | `run_graphify.py` → `related_links.py build`（同じ `Type=oneshot` サービスに `ExecStart=` を2行。グラフ作成が失敗した夜は候補を作らず前夜の候補が残る。`Nice=15`, `TimeoutStartSec=4h`） |
 
 **夜間ジョブの順序意図:** `02:30` 自動コミット（日中の人間編集を HEAD に確定） → `03:30` Wiki 健全性点検 → `04:00` 確定 Silver/Gold のグラフ生成。
 
@@ -136,6 +137,11 @@ ExecStart={{REPO_DIR}}/.venv/bin/python /srv/%i/00_System/scripts/<script>.py
 | `NIKI_FETCH_FULLTEXT` | 任意 | `1` | 記事ページから本文を抽出する（`0` でフィードの要約のみ） |
 | `NIKI_USER_AGENT` | 任意 | 空（アプリ既定の UA） | 巡回時の User-Agent |
 | `NIKI_SCHEDULER` | 任意 | `1` | `0` でバックグラウンド巡回を止める（テスト用。Compose では渡さない） |
+| `NIKI_SCORE_WEIGHTS` | 任意 | 空（= `relevance=8,originality=6,utility=6,noise_penalty=15`） | 関心スコアの合算の重み。変えると次の起動で採点済み項目を LLM なしで再計算 |
+| `NIKI_SCORE_TAG_LIMIT` | 任意 | `20` | 採点プロンプトに渡す関心タグ（直近30日の上位）の件数 |
+| `NIKI_SCORE_STOP_TAGS` | 任意 | 空 | 関心タグから外す広すぎるタグ（カンマ区切り。例: `tech,news,memo`） |
+| `NIKI_LINKS_PER_NOTE` / `NIKI_LINKS_MIN_SIM` | 任意 | `3` / `0.72` | つながり候補のノートあたり件数と類似度の下限（ホストの `related_links.py` が読む） |
+| `NIKI_LINKS_CLASSIFY_LIMIT` | 任意 | `30` | 1晩に LLM へ関係を判定させるペアの上限（同上） |
 | `HERMES_INTERVAL` / `HERMES_LIMIT` | 任意 | `300` / `5` | Hermes 監視間隔（秒）と1回の処理上限 |
 | `HERMES_SEARXNG_URL` | 任意 | `http://searxng:8080` | Hermes が参照する SearXNG URL（コンテナでは `SEARXNG_URL` として渡す） |
 | `COMPOSE_PROFILES` | 任意 | `tools`（1バンドルのみ） | SearXNG + Open WebUI の起動制御 |

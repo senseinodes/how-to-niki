@@ -27,11 +27,12 @@ Constraints that AI agents must NOT deviate from on their own during implementat
    Build the Web UI with **FastAPI + Jinja2 + HTMX + Vanilla CSS (CSS Variables / Grid / Flexbox) + minimal Vanilla JS**. Do NOT introduce Node.js, Tailwind CSS, React/Vue, Vite, Webpack, or any frontend build pipeline. Vendor HTMX locally (`static/vendor/htmx.min.js`) with no CDN dependency.
 2. **No Heavy External Databases or Separate Memory Systems:**
    Do NOT spin up external DB containers such as PostgreSQL, MySQL, Neo4j, Qdrant, Chroma, or Elasticsearch. Consolidate all persistence and search into **SQLite 3 (`FTS5` + `sqlite-vec`)**.
-3. **Never Merge the 3 SQLite Files:**
+3. **Never Merge the 4 SQLite Files:**
    Because their purposes and lifecycles differ, always keep them as separate files inside `00_System/`:
    - `pkm.sqlite`: Search index, tag stats, and lint results (can be deleted and recreated from scratch via `build_index.py --rebuild`)
    - `rss_triage.sqlite`: Web app state (sources, items, action history, crawl runs — survives a `pkm.sqlite` rebuild)
    - `hermes.sqlite`: Processing history, retry state, and self-repair counts of the autonomous Silver worker
+   - `links.sqlite`: Silver-to-Silver link candidates, human decisions (link / reject / hold), and LLM relation labels (`related_links.py`; if lost, candidates simply reappear — the links themselves live in the note bodies)
 4. **Never Allow OKF Frontmatter in the Bronze Layer:**
    Files under `10_Inbox/` must never contain a `type` key.
 5. **Never Let LLMs Write Derived Values, and Never Move Silver Notes:**
@@ -58,6 +59,9 @@ Constraints that AI agents must NOT deviate from on their own during implementat
    - Both folders are excluded via `.gitignore` (never pushed to GitHub, while still synced via Syncthing), and `gate_okf.py` / `build_index.py` check `git check-ignore` so they are never logged to `lineage.jsonl` or `log.md`.
    - `hermes.py` bypasses LLM placement planning for Bronze items from `19_private/`, locks their target category to `28_me`, and never sends query terms to SearXNG (external search engine).
    - The web app blocks Share on both `sources.private == 1` and path prefixes `10_Inbox/19_private/` / `20_Literature/28_me/`.
+   - `related_links.py` never pairs a private note with a public one (a link would leave the private path inside a public note).
+7. **Humans Choose Links, Code Writes Them:**
+   Mutual links between Silver notes (the `## 関連` section at the end of the body) are chosen by a human from nightly candidates; `related_links.py` appends them and runs `gate_okf.py` (reverting on failure). The LLM only labels a candidate's relation (agree / complement / possible conflict) and never writes links. Conflicts are not resolved but kept as "— 対立する見方" (opposing view), to be treated as open questions in Gold.
 
 ---
 
@@ -83,6 +87,7 @@ Constraints that AI agents must NOT deviate from on their own during implementat
 │      - autocommit.py  (02:30)     : gated auto git commit & push            │
 │      - lint_wiki.py   (03:30)     : broken links, orphans, SHOULD → DB      │
 │      - run_graphify.py(04:00)     : Silver/Gold-only knowledge graph        │
+│        → related_links.py build    : Silver link candidates + relations     │
 └────────────────────────────────────┬────────────────────────────────────────┘
                                      │ HTTP :8080 (OpenAI-compatible / On-Demand)
 ┌────────────────────────────────────▼────────────────────────────────────────┐

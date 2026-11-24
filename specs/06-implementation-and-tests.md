@@ -9,7 +9,7 @@
 ### Phase 1: PKM バンドル骨格・OKF スキーマ・決定論的ガーディアン
 - **対象ファイル:**
   - `pyproject.toml`, `.python-version`, `.github/workflows/test.yml`
-  - `pkm/` テンプレート一式（ディレクトリ、`index.md`、`log.md`、`.gitignore`、`.stignore`、`AGENTS.md`、`00_System/specs/okf_local_profile.md`）
+  - `pkm/` テンプレート一式（ディレクトリ、`index.md`、`log.md`、`.gitignore`、`.stignore`、`AGENTS.md`、`CLAUDE.md`、`GEMINI.md`、`00_System/specs/okf_local_profile.md`）
   - `pkm/00_System/schemas/okf_v03.py`
   - `pkm/00_System/scripts/{pkm_config,gate_okf,lint_wiki,verify_note,autocommit}.py`
 - **完了条件（DoD）:**
@@ -41,12 +41,15 @@
 
 ### Phase 4: トリアージ Web アプリ (`rss-triage-app`) ＆ 自律ワーカー (`hermes.py`)
 - **対象ファイル:**
-  - `pkm/00_System/scripts/hermes.py`
+  - `pkm/00_System/scripts/hermes.py`, `pkm/00_System/scripts/related_links.py`
   - `apps/rss_triage/`（`Dockerfile`, `README.md`, `rss_triage/*.py`, `templates/*.html`, `static/*`）
 - **完了条件（DoD）:**
   - `hermes.py` が 10分経過済み未処理 Bronze を選び、計画 → SearXNG 調査 → Silver 生成＋自己修復 → `hermes.sqlite` 記録を実行でき、既引用 Bronze や `x-pkm-my-comment` の保護ルールを守る。
-  - `rss-triage-app` の全5画面・全エンドポイントが動作し、テスト用モック（`State` の `chat` / `embedder` / `http` / `clock` 差し替え）で以下が検証済み:
-    - RSS/Atom 巡回・条件付き GET・本文抽出・Few-shot スコアリング・7日自動アーカイブ
+  - `related_links.py` が graph.json と Embedding（なければ共通タグ）から候補を作り、つながり済み・判断済み・私的と公開の組を除外し、関係判定をキャッシュ（内容が変わらなければ再判定しない・1晩の上限・推論機オフラインでも候補は作る）できる。`link` は両方の `## 関連` に相互リンクを追記して `generated` を変えずにゲートを通し、不合格なら両方を元に戻す。`unlink` で追記行だけを消せる。
+  - `rss-triage-app` の全6画面・全エンドポイントが動作し、テスト用モック（`State` の `chat` / `embedder` / `http` / `clock` 差し替え）で以下が検証済み:
+    - RSS/Atom 巡回・条件付き GET・本文抽出・観点別スコアリング（関心タグの注入・合算・重み変更時の LLM なし再計算・速報フラグと絞り込み）・7日自動アーカイブ
+    - つながり画面（絞り込み・つなぐ / 対立する見方としてつなぐ / 却下 / 保留 / 元に戻す・本文の並列表示・Gold 材料候補のメモ）
+    - 初回の承認待ち Gold の一覧（承認可能 / 要修正の区別）と承認
     - Keep（`type` なし Bronze 書き出し）・Dismiss・Undo・一括 Dismiss・Restore
     - 非 RSS サイトの AI セレクタ推定・プレビュー・再推定
     - Podcast 遅延文字起こし（巡回時に音声 DL しないこと、`<podcast:transcript>` 優先、未搭載時の `whisper` 呼び出し＆一時音声削除）
@@ -75,8 +78,8 @@
 | ディレクトリ | テストファイル例 | 主な検証観点 |
 | :--- | :--- | :--- |
 | `tests/schemas/` | `test_okf_v03.py` | MUST/SHOULD/任意キー、旧キー拒否、タイムスタンプ正規化、順序非依存トラストティア、パス解決（ルート基準/ファイル基準/外部拒否/デコード）、保護フィールド比較 |
-| `tests/scripts/` | `test_pkm_config.py`, `test_gate_okf.py`, `test_lint_wiki.py`, `test_verify_note.py`, `test_autocommit.py`, `test_gemma_client.py`, `test_build_index.py`, `test_tag_stats.py`, `test_hermes.py`, `test_run_graphify.py` | ルール1〜7網羅、生 YAML 編集の未知キー/順序保持、git 除外ファイルの lineage 非記録、Gold の `promoted`・未記録 `review_pending` の補完・lineage の排他ロック、`build_index` による lineage 記録、`PKM_API_KEY` の伝播、Hermes の私的 Bronze 処理と `AGENTS.md` 末尾の節の抽出、`--save-db`、自己修復リトライ＆ロールバック、サイドカー差分＆Office日付、FTS5+vec+3文字未満LIKE、RRF重み付け、Hermes 接続断時の非記録スキップ、グラフの Bronze 除外 |
-| `tests/apps/` | `test_rss_triage_core.py`, `test_rss_triage_web.py`, `test_rss_triage_pages.py`, `test_rss_triage_sites.py`, `test_rss_triage_podcast.py` | 巡回/採点/Keep/Undo/Archive、FastAPI TestClient による全5画面・HTMX 応答・OOB 削除、AI セレクタ、Podcast 遅延文字起こし＆一時ファイル消去、Share OAuth 署名・私的ガード、PWA share_target |
+| `tests/scripts/` | `test_pkm_config.py`, `test_gate_okf.py`, `test_lint_wiki.py`, `test_verify_note.py`, `test_autocommit.py`, `test_gemma_client.py`, `test_build_index.py`, `test_tag_stats.py`, `test_hermes.py`, `test_run_graphify.py`, `test_related_links.py` | つながり候補の生成・除外条件・私的ペアの拒否・関係判定のキャッシュと上限・`## 関連` の追記／取り消しとゲート不合格時のロールバック・`linked`/`unlinked` の lineage、ルール1〜7網羅、生 YAML 編集の未知キー/順序保持、git 除外ファイルの lineage 非記録、Gold の `promoted`・未記録 `review_pending` の補完・lineage の排他ロック、`build_index` による lineage 記録、`PKM_API_KEY` の伝播、Hermes の私的 Bronze 処理と `AGENTS.md` 末尾の節の抽出、`--save-db`、自己修復リトライ＆ロールバック、サイドカー差分＆Office日付、FTS5+vec+3文字未満LIKE、RRF重み付け、Hermes 接続断時の非記録スキップ、グラフの Bronze 除外 |
+| `tests/apps/` | `test_rss_triage_core.py`, `test_rss_triage_web.py`, `test_rss_triage_pages.py`, `test_rss_triage_sites.py`, `test_rss_triage_podcast.py` | 巡回/観点別採点と合算・再計算/Keep/Undo/Archive、FastAPI TestClient による全6画面（つながり・初回の承認待ちを含む）・HTMX 応答・OOB 削除、AI セレクタ、Podcast 遅延文字起こし＆一時ファイル消去、Share OAuth 署名・私的ガード、PWA share_target |
 | `tests/deploy/` | `test_inference_config.py`, `test_server_compose.py` | `llama-swap` config の `ttl: 300`・グループ設定・全モデルID、`docker-compose.yml` のボリューム・環境変数（env 例との突き合わせ）・`PKM_ENV_FILE=/nonexistent`・SearXNG JSON フォーマット有効化、systemd 全ユニットのテンプレート化と夜間ジョブの順序 |
 
 ---
@@ -125,3 +128,11 @@
     lineage を書くのが手動のゲート実行だけだと、エージェントがゲートを実行せずに Gold を編集したとき `review_pending` が残らず、承認しても `review_cleared` が残らない。定期実行される `build_index.py` で状態変化を記録し、`verify_note.py` は承認前にもゲートを通す。複数プロセス（Hermes コンテナとホストの timer）が書くので `flock` とロック後の状態再読込が必須。
 17. **構成 B（1台完結）の推論 URL:**
     env ファイルは systemd（ホスト）と Compose（コンテナ）で共用する。`localhost` はコンテナ内では自分自身、`host.docker.internal` は Linux ホストからは引けない。ホストの LAN / Tailscale IP を使う。
+18. **LLM に 0〜100 のスコアを直接付けさせない:**
+    65〜85 あたりに固まり、50+ / 80+ の閾値が効かなくなる。観点ごとの離散値（ルーブリック付き）を返させてコードで合算し、要約と理由を先に出させてから採点させる。重みは保存済みの観点値から再計算できるようにしておく。
+19. **Keep / Dismiss を好みの学習に使わない:**
+    Dismiss には「既知」「重複」「今は読まない」も混ざるため、Few-shot の負例にすると誤学習する。関心の基準は実際に知識ベースへ残したノートのタグ（直近30日）にする。
+20. **初回承認待ちの Gold は検索 DB に入らない:**
+    `human:` 承認のない Gold はゲートに落ちるので `build_index.py` も `autocommit.py` も素通りし、どこにも表示されない。Web アプリが `50_Knowledge/` を直接ゲートに通して一覧にする。判定はエラー文言の定数（`MISSING_HUMAN_VERIFICATION`）で行い、文字列を二重に書かない。
+21. **リンクの追記で `generated` を変えない:**
+    つながりの追記は「リンク修復」と同じく意味の変わらない変更。`generated.at` を進めると、内容は変わっていないのに Silver の「最終的な意味のある変更日時」が新しくなってしまう。私的ノートと公開ノートを組にすると公開ノートに私的パスが残るので、候補の段階から除外する。

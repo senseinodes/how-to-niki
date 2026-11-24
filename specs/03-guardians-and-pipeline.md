@@ -1,6 +1,6 @@
 # 03. 決定論的スクリプト群 & 自律パイプライン仕様 (`00_System/scripts/`)
 
-`pkm/00_System/scripts/` に配置する全11本のスクリプトと `pkm/00_System/schemas/okf_v03.py` の仕様を定義する。
+`pkm/00_System/scripts/` に配置する全12本のスクリプトと `pkm/00_System/schemas/okf_v03.py` の仕様を定義する。
 すべてのスクリプトは Python 3.12〜3.14 で動作し、`pyproject.toml` のコア依存（`pydantic`, `pyyaml`, `openai`, `sqlite-vec`, `markitdown[pdf,docx,xlsx,pptx]`）のみで実行できること（Web アプリ用依存は使わない）。
 
 ---
@@ -19,6 +19,7 @@
 | `tag_stats.py` | Silver / Gold の期間別タグランキング集計 CLI | なし（読取専用） |
 | `hermes.py` | Bronze 監視 → SearXNG 調査 → Silver 自動生成ワーカー | `20_Literature/`、`00_System/hermes.sqlite`、`lineage.jsonl` |
 | `run_graphify.py` | ゲート合格 Silver / Gold 限定ナレッジグラフ夜間バッチ | `00_System/graph/` |
+| `related_links.py` | Silver 同士のつながり候補・LLM による関係判定・人間が選んだ相互リンクの追記と取り消し | `00_System/links.sqlite`、`link` 時の対象 Silver 本文・`lineage.jsonl` |
 | `autocommit.py` | ゲート検証付き定期自動 `git commit` & `push` | Git リポジトリ |
 
 ---
@@ -101,6 +102,7 @@
     - Gold の場合は合格に必ず `human:` 検証があるので「初回承認」の記録を兼ねる。`at` は最新の `human:` 検証時刻にし、`"verified": {by, at}` を加える（既存 Gold を後から記録しても `log.md` の日付がずれない）。
   - Gold が `review_pending` へ遷移したとき: `{"at", "event": "review_pending", "by": "process:gate-okf", "path", "title", "generated": {by, at}, "expired_verification": {by, at}}`
   - Gold が `review_pending` から `human-reviewed` に復帰したとき: `{"at", "event": "review_cleared", "by": "process:gate-okf", "path", "title", "verified": {by, at}}`
+  - ほかに `related_links.py` が `linked` / `unlinked`（`{"event", "path", "target", "at", "by"}`）を同じ `append_lineage`（`flock`）で追記する。状態判定（`read_lineage_state`）と `log.md` はこれらを無視する。
 
 ### 4.2 CLI・終了コード
 - `gate_okf.py [paths...] [--root DIR] [--fix] [--json] [--no-git] [--no-lineage] [-v]`
@@ -357,3 +359,70 @@ CREATE INDEX IF NOT EXISTS hermes_items_at ON hermes_items(at);
 6. `--no-push` でなく上流ブランチより先行していれば `git push -q`（失敗してもコミットは残し、終了コード 3 で次回再送）。
 7. 終了コード: `0` = 正常、`1` = ゲート不合格あり（他はコミット済み）、`2` = 非 Git リポジトリ、`3` = push 失敗。
 8. CLI: `autocommit.py [--root DIR] [--no-push] [--dry-run]`。
+
+---
+
+## 13. Silver 同士のつながり候補 (`related_links.py`)
+
+「つないだ方がよさそうな Silver のペア」を夜間に作り、Web アプリの「つながり」画面（04 §4.2）で人間が「つなぐ / 却下 / 保留」を選ぶ。**LLM はリンクを書かない**（関係を判定するだけ）。
+
+### 13.1 状態 DB (`00_System/links.sqlite`、Git/Syncthing 除外)
+消えても候補が再び出るだけで、リンク自体はノート本文に残る。
+
+```sql
+CREATE TABLE IF NOT EXISTS candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    a TEXT NOT NULL,                 -- a < b（辞書順）
+    b TEXT NOT NULL,
+    score REAL NOT NULL,             -- 並び順（類似度 + 共通タグ1つにつき 0.05、最大3つ）
+    sim REAL,                        -- cosine 類似度（Embedding がなければ NULL）
+    shared_tags TEXT NOT NULL DEFAULT '[]',
+    same_category INTEGER NOT NULL,
+    is_new INTEGER NOT NULL DEFAULT 0, -- どちらかが初回インデックスから3日以内
+    created_at TEXT NOT NULL,
+    relation TEXT,                   -- agree | complement | conflict | unrelated（未判定は NULL）
+    point TEXT,                      -- 関係の要点1文
+    UNIQUE (a, b)
+);
+CREATE TABLE IF NOT EXISTS decisions (
+    a TEXT NOT NULL, b TEXT NOT NULL,
+    decision TEXT NOT NULL,          -- linked | rejected | held
+    at TEXT NOT NULL, by TEXT NOT NULL,
+    added TEXT,                      -- linked のとき追記した行（元に戻す用。JSON）
+    PRIMARY KEY (a, b)
+);
+CREATE TABLE IF NOT EXISTS relations (  -- 判定のキャッシュ（ノートの内容が変わったら判定し直す）
+    a TEXT NOT NULL, b TEXT NOT NULL,
+    sha_a TEXT NOT NULL, sha_b TEXT NOT NULL,
+    relation TEXT NOT NULL, point TEXT NOT NULL DEFAULT '', at TEXT NOT NULL,
+    PRIMARY KEY (a, b)
+);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- built_at
+```
+
+### 13.2 候補の作り方 (`build`)
+1. `00_System/graph/graph.json`（ゲート合格ノートだけのグラフ）から Silver ノートを集める。なければ `no-graph` で終了。
+2. `pkm.sqlite` のチャンク Embedding をノートごとに平均し、`sqlite-vec` の KNN（`k = 60` チャンク）で近い Silver を探す。sqlite-vec・Embedding が使えなければ共通タグだけで探す。
+3. 次のペアは除外: すでに本文リンク・`sources` でつながっている（graph の `link` / `source` エッジ）、`decisions` で `linked` / `rejected` 済み、**私的ノート（接頭辞 `20_Literature/28_me/` / `10_Inbox/19_private/`、または `git check-ignore` の対象）と公開ノートの組**。
+4. 採用条件: `sim >= --min-sim`（既定 `0.72`）または共通タグ2つ以上。ノートごとに上位 `--per-note`（既定 3）件を残し、`candidates` を丸ごと入れ替える。
+5. **関係の判定 (`classify`):** スコア順に、両ノート（本文は各 2,500 字まで）を `gemma4-fast` に渡し、JSON `{"point": "...", "relation": "agree|complement|conflict|unrelated"}` を出させる（`point` を先に考えさせる。`conflict` は「A は〜、B は〜」の形）。
+   - 両ノートの SHA256 が `relations` と同じなら前回の判定を使う（推論機の負荷を抑える）。
+   - 1回の判定数は `--classify-limit`（既定 30）まで。残りは次の夜。
+   - 推論機に届かなければ判定せずに候補だけ作る（警告のみ）。解析できない応答はそのペアだけ飛ばす。
+
+### 13.3 つなぐ (`link`) / 元に戻す (`unlink`)
+- 対象は両方とも `20_Literature/` の実在 Silver。同じノート同士、私的ノートと公開ノートの組は `LinkError`。
+- 両方の本文末尾の `## 関連` 節（なければ作る）に、相手へのファイル基準の相対リンク `* [<title>](<相対パス>)` を追記する。すでに同じリンクがあれば追記しない。関係が `conflict` の候補をつなぐときは項目末尾に ` — 対立する見方` を付ける。
+- **`generated` は変えない**（リンクだけの変更なので、承認済みの状態や鮮度を動かさない）。
+- 追記後に両方を `gate_okf.run_gate(..., write_lineage=False)` に通し、どちらかが不合格なら両方とも元の内容に戻す。
+- 合格したら `decisions` に `linked`（追記した行と、見出しを新規作成したかを `added` に保存）を記録し、`lineage.jsonl` に `{"event": "linked", "path": a, "target": b, "at", "by"}` を追記する（私的ノートを含むペアは記録しない）。`log.md` には出さない。
+- `unlink` は `added` に記録した行だけを消し（見出しを自分で作っていて、節が空になったら見出しも消す）、ゲートを通して判断を未処理に戻し、`unlinked` を記録する。
+
+### 13.4 画面用の関数（Web アプリから import して使う）
+`list_candidates(root, view)`（`all` 未判断 / `same` 同カテゴリ / `cross` カテゴリ横断 / `conflict` 対立の可能性 / `held` 保留。移動・削除されたノートの候補は出さない）、`counts(root)`（ナビのバッジ。`links.sqlite` を読み取り専用で開く）、`get_candidate`、`set_decision`、`week_stats`（今週つないだ・却下した数と孤立 Silver 数）、`clusters`（本文リンクと `linked` でつながった3本以上の Silver のまとまり＝Gold の材料候補。中の対立ペアも返す）、`gold_prompt(cluster)`（そのまとまりから Gold を作るよう AI エージェントへ渡すメモ。対立ペアは「どちらかに寄せず論点として両方の見方を残す」と指示する）。
+
+### 13.5 CLI
+- `related_links.py build [--db PATH] [--per-note 3] [--min-sim 0.72] [--no-llm] [--classify-limit 30] [--json]`（既定値は `NIKI_LINKS_PER_NOTE` / `NIKI_LINKS_MIN_SIM` / `NIKI_LINKS_CLASSIFY_LIMIT` で上書き可）
+- `related_links.py list`（未処理の候補と判定の一覧。エージェントが Gold の論点探しに読んでよい）
+- `related_links.py link A.md B.md --by human:{{USER_ID}} [--no-git]`（人間専用。終了コード `0` = つないだ、`1` = ゲート不合格で元に戻した、`2` = つなげない組）
+- 共通: `--root DIR`。夜間は `{{PROJECT_NAME}}-graphify@.service` が `run_graphify.py` の後に `build` を実行する（05 §2.3）。

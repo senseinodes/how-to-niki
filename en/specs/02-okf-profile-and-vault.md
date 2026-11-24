@@ -22,6 +22,8 @@ This document defines the directory layout of the PKM bundle (`{{PKM_ROOT}}` = t
 ```text
 pkm/
 ├── AGENTS.md                        # Shared agent code of conduct (non-OKF)
+├── CLAUDE.md                        # Claude Code entry file (only imports `@AGENTS.md`; holds no rules)
+├── GEMINI.md                        # Gemini CLI entry file (only tells the agent to read AGENTS.md)
 ├── index.md                         # [Auto-generated] Bundle root catalog (holds okf_version: "0.3" in frontmatter)
 ├── log.md                           # [Auto-generated] OKF standard update log generated from lineage.jsonl
 ├── .gitignore                       # Git exclusion rules
@@ -38,7 +40,8 @@ pkm/
 │   │   └── rejected/                # [Git-ignored] Drafts saved after failed self-repair
 │   ├── pkm.sqlite                   # [Git/Syncthing-ignored] DB for build_index / lint_wiki
 │   ├── rss_triage.sqlite            # [Git/Syncthing-ignored] State DB for rss-triage-app
-│   └── hermes.sqlite                # [Git/Syncthing-ignored] Processing state DB for hermes.py
+│   ├── hermes.sqlite                # [Git/Syncthing-ignored] Processing state DB for hermes.py
+│   └── links.sqlite                 # [Git/Syncthing-ignored] related_links.py candidates, decisions, relation labels
 ├── 10_Inbox/                        # [Bronze] Non-OKF
 │   ├── index.md
 │   ├── 11_rss/                      # Articles kept from RSS & non-RSS sites
@@ -183,7 +186,7 @@ Validator implementation: `00_System/schemas/okf_v03.py` (Pydantic v2 with `Conf
 | :--- | :--- | :--- |
 | **Approved** | `50_Knowledge/` and `trust_tier == "human-reviewed"` | Pass (`review_pending = False`) |
 | **Review Pending** | `50_Knowledge/` and `trust_tier != "human-reviewed"` and at least 1 historical `human:` verification exists | **Pass (not an error; file left untouched).** Sets `review_pending = True`, records `review_pending` in `lineage.jsonl`, and surfaces it in `index.md` and the Web UI badge |
-| **Unapproved Placement** | `50_Knowledge/` and 0 historical `human:` verifications | **Error** (human approval is mandatory for promotion) |
+| **Unapproved Placement (Awaiting First Approval)** | `50_Knowledge/` and 0 historical `human:` verifications | **Error** (human approval is mandatory for promotion). The error message is defined as the constant `okf_v03.MISSING_HUMAN_VERIFICATION`; the web app uses exactly this message to list Gold notes that fail only for this reason as "awaiting first approval" and lets the human approve them (04 §4.2). Agents treat this error as expected and hand the note to the human without adding `verified` |
 
 After re-reviewing, when the human appends a new `{ by: human:{{USER_ID}}, at: <now> }` via `verify_note.py` or the UI "Approve" button and passes the gate, the note automatically returns to Approved and `review_cleared` is recorded in `lineage.jsonl`.
 
@@ -234,11 +237,15 @@ Place `AGENTS.md` at the bundle root so every agent (Claude Code, Antigravity, H
    - Human: `human:{{USER_ID}}`
    - Scripts: `process:gate-okf`, `process:build-index`, `process:lint-wiki`
 4. **Allowed vs. Forbidden Keys Table** (handling of `x-pkm-medal`, `okf_version`, `jd_id`, `x-pkm-my-comment`, `verified`).
-5. **Silver → Gold Synthesis Procedure** (never move Silver; synthesize a new note; only the human verifies).
+5. **Silver → Gold Synthesis Procedure** (never move Silver; synthesize a new note; only the human verifies — first approval via `verify_note.py` or the web app's "awaiting first approval" list).
 6. **Auto-Generated Artifacts — Do Not Edit List** (`index.md`, `log.md`, `lineage.jsonl`, `*.extracted.md`, `00_System/graph/`).
-7. **Rules for Combining with Official OKF Agent Skills (`okf-generate` / `okf-consume`):**
+7. **The `## 関連` (Related) section at the end of Silver bodies:** mutual links a human chose on the Links screen (written by `related_links.py`). Agents must not delete or reorder entries and must keep them when rewriting a Silver note. Entries ending with "— 対立する見方" (opposing view) are pairs a human confirmed as conflicting; do not rewrite one side to resolve the conflict (Gold treats both views as an open question). Agents never run `related_links.py link`.
+8. **Rules for Combining with Official OKF Agent Skills (`okf-generate` / `okf-consume`):**
    - Precedence diff table where the local profile overrides generic official skills (restrict `type` to 3 values, `description` 1–3 sentences, skills must not write `index.md`/`log.md`, mandatory `gate_okf.py` run, footnote syntax `[^<id>]`).
-8. **Summary of Prohibitions.**
+9. **How to Research (Search & Graph):** use `search.py` (full-layer hybrid search) before grepping. Claude Code's Grep / Glob honor `.gitignore`, so sidecars (`*.extracted.md`), `28_me/`, `19_private/`, and `00_System/graph/` never show up in grep and can only be found via `search.py`. Document how to run it (`PKM_ENV_FILE` and the host venv's Python), its exit codes, how to treat `WARN:` (embeddings unreachable, FTS only), the shape of `graph.json` and how to get 1-hop neighbors, and the relation labels readable via `related_links.py list` (machine guesses). Also point the `okf-consume` procedure to `search.py` first.
+10. **Summary of Prohibitions.**
+
+**Entry files:** Claude Code reads `AGENTS.md` via `CLAUDE.md` (`@AGENTS.md` import) and Gemini CLI via `GEMINI.md`; Antigravity reads `AGENTS.md` directly (it caps a file at roughly 24 KB, so keep `AGENTS.md` within that). Keep all rules in `AGENTS.md` only; entry files hold no content.
 
 ---
 

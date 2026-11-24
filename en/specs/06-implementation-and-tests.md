@@ -9,7 +9,7 @@ Implement and verify across 5 phases ordered from fewest external dependencies a
 ### Phase 1: PKM Bundle Skeleton, OKF Schema & Deterministic Guardians
 - **Target files:**
   - `pyproject.toml`, `.python-version`, `.github/workflows/test.yml`
-  - Complete `pkm/` template (directories, `index.md`, `log.md`, `.gitignore`, `.stignore`, `AGENTS.md`, `00_System/specs/okf_local_profile.md`)
+  - Complete `pkm/` template (directories, `index.md`, `log.md`, `.gitignore`, `.stignore`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `00_System/specs/okf_local_profile.md`)
   - `pkm/00_System/schemas/okf_v03.py`
   - `pkm/00_System/scripts/{pkm_config,gate_okf,lint_wiki,verify_note,autocommit}.py`
 - **Definition of Done (DoD):**
@@ -41,12 +41,15 @@ Implement and verify across 5 phases ordered from fewest external dependencies a
 
 ### Phase 4: Triage Web App (`rss-triage-app`) & Autonomous Worker (`hermes.py`)
 - **Target files:**
-  - `pkm/00_System/scripts/hermes.py`
+  - `pkm/00_System/scripts/hermes.py`, `pkm/00_System/scripts/related_links.py`
   - `apps/rss_triage/` (`Dockerfile`, `README.md`, `rss_triage/*.py`, `templates/*.html`, `static/*`)
 - **Definition of Done (DoD):**
   - `hermes.py` selects settled (> 10 min) unprocessed Bronze notes, runs plan → SearXNG research → Silver generation + self-repair → `hermes.sqlite` logging, and respects already-cited Bronze skips and `x-pkm-my-comment` protection.
-  - All 5 screens and all endpoints of `rss-triage-app` work, verified with injected mocks (`chat`, `embedder`, `http`, `clock` on `State`) for:
-    - RSS/Atom crawling, conditional GET, full-text extraction, few-shot scoring, 7-day auto-archive
+  - `related_links.py` builds candidates from graph.json and embeddings (shared tags as fallback), excludes already-linked, decided, and private/public pairs, and caches relation labels (no relabeling of unchanged notes, nightly cap, candidates still built when the inference host is offline). `link` appends mutual links to both `## 関連` sections without changing `generated`, runs the gate, and reverts both on failure. `unlink` removes only the appended lines.
+  - All 6 screens and all endpoints of `rss-triage-app` work, verified with injected mocks (`chat`, `embedder`, `http`, `clock` on `State`) for:
+    - RSS/Atom crawling, conditional GET, full-text extraction, per-axis scoring (interest-tag injection, combination, LLM-free recompute on weight change, breaking flag and filter), 7-day auto-archive
+    - Links screen (filters, link / link as opposing view / reject / hold / undo, side-by-side bodies, Gold material memo)
+    - Listing Gold awaiting first approval (approvable vs. needs fixes) and approving it
     - Keep (non-OKF Bronze write without `type`), Dismiss, Undo, bulk Dismiss, Restore
     - Non-RSS AI selector estimation, preview, and re-estimation
     - Podcast lazy transcription (no audio DL during crawl, `<podcast:transcript>` priority, `whisper` invocation & temp audio cleanup when absent)
@@ -75,8 +78,8 @@ All unit and integration tests must run **fast and completely offline without de
 | Directory | Example Test Files | Key Verification Areas |
 | :--- | :--- | :--- |
 | `tests/schemas/` | `test_okf_v03.py` | MUST/SHOULD/optional keys, legacy key rejection, timestamp normalization, order-independent trust tier, path resolution (root-relative / file-relative / external rejection / percent-decoding), protected-field diffing |
-| `tests/scripts/` | `test_pkm_config.py`, `test_gate_okf.py`, `test_lint_wiki.py`, `test_verify_note.py`, `test_autocommit.py`, `test_gemma_client.py`, `test_build_index.py`, `test_tag_stats.py`, `test_hermes.py`, `test_run_graphify.py` | Full coverage of Rules 1–7, raw YAML editing preserving unknown keys & order, no lineage for git-ignored files, Gold `promoted` / backfilling unrecorded `review_pending` / `flock` mutual exclusion, lineage recording in `build_index`, `PKM_API_KEY` propagation, Hermes private Bronze handling & extracting the final section of `AGENTS.md`, `--save-db`, self-repair retry & rollback, sidecar diffs & Office dates, FTS5 + vec + `<3`-char LIKE, RRF weighting, Hermes skipping without recording on connection failure, Bronze exclusion in graph |
-| `tests/apps/` | `test_rss_triage_core.py`, `test_rss_triage_web.py`, `test_rss_triage_pages.py`, `test_rss_triage_sites.py`, `test_rss_triage_podcast.py` | Crawl/score/Keep/Undo/Archive, FastAPI `TestClient` across all 5 screens, HTMX responses & OOB removals, AI selectors, Podcast lazy transcription & temp file cleanup, Share OAuth signing & private guards, PWA `share_target` |
+| `tests/scripts/` | `test_pkm_config.py`, `test_gate_okf.py`, `test_lint_wiki.py`, `test_verify_note.py`, `test_autocommit.py`, `test_gemma_client.py`, `test_build_index.py`, `test_tag_stats.py`, `test_hermes.py`, `test_run_graphify.py`, `test_related_links.py` | Link candidate generation, exclusion rules, rejecting private pairs, relation-label caching and cap, appending/undoing `## 関連` with rollback on gate failure, `linked`/`unlinked` lineage, Full coverage of Rules 1–7, raw YAML editing preserving unknown keys & order, no lineage for git-ignored files, Gold `promoted` / backfilling unrecorded `review_pending` / `flock` mutual exclusion, lineage recording in `build_index`, `PKM_API_KEY` propagation, Hermes private Bronze handling & extracting the final section of `AGENTS.md`, `--save-db`, self-repair retry & rollback, sidecar diffs & Office dates, FTS5 + vec + `<3`-char LIKE, RRF weighting, Hermes skipping without recording on connection failure, Bronze exclusion in graph |
+| `tests/apps/` | `test_rss_triage_core.py`, `test_rss_triage_web.py`, `test_rss_triage_pages.py`, `test_rss_triage_sites.py`, `test_rss_triage_podcast.py` | Crawl / per-axis scoring, combination & rescoring / Keep / Undo / Archive, FastAPI `TestClient` across all 6 screens (including Links and awaiting first approval), HTMX responses & OOB removals, AI selectors, Podcast lazy transcription & temp file cleanup, Share OAuth signing & private guards, PWA `share_target` |
 | `tests/deploy/` | `test_inference_config.py`, `test_server_compose.py` | `llama-swap` config `ttl: 300`, Parallel Groups, all model IDs; `docker-compose.yml` volumes, env vars (cross-checked with `pkm.env.example`), `PKM_ENV_FILE=/nonexistent`, SearXNG JSON format enabled; all systemd units templated & nightly job order |
 
 ---
@@ -125,3 +128,11 @@ Real-world pitfalls uncovered during the original build and live operation. Guar
     If lineage is written only on manual gate runs, an agent editing a Gold note without running the gate leaves no `review_pending`, which in turn prevents `review_cleared` from being logged upon approval. Recording state transitions periodically in `build_index.py` and running the gate pre-approval in `verify_note.py` closes the gap. Because multiple processes (Hermes container + host timer) write concurrently, `flock` plus re-reading state after locking is mandatory.
 17. **Inference URL in Pattern B (Single-Machine Setup):**
     The env file is shared between systemd (host) and Compose (containers). `localhost` refers to the container itself inside Docker, and `host.docker.internal` does not resolve on a Linux host. Use the host's LAN or Tailscale IP.
+18. **Never Let the LLM Assign a 0–100 Score Directly:**
+    Scores cluster around 65–85 and the 50+ / 80+ thresholds stop working. Have it return discrete per-axis values (with rubrics), combine them in code, and make it write the summary and rationale before scoring. Keep the axis values so weights can be recomputed later.
+19. **Do Not Learn Preferences from Keep / Dismiss:**
+    Dismiss also means "already known", "duplicate", or "not now", so using it as few-shot negatives causes mislearning. Base interest on the tags of notes actually kept in the knowledge base (last 30 days).
+20. **Gold Awaiting First Approval Is Not in the Search DB:**
+    Gold without a `human:` approval fails the gate, so `build_index.py` and `autocommit.py` skip it and it shows up nowhere. The web app runs `50_Knowledge/` through the gate directly to list it, matching on the error constant (`MISSING_HUMAN_VERIFICATION`) rather than duplicating the string.
+21. **Appending Links Must Not Change `generated`:**
+    Adding a link is a meaning-preserving change like a link repair; bumping `generated.at` would make a Silver note's "last meaningful change" newer even though its content did not change. Pairing a private note with a public one would leave a private path in the public note, so exclude such pairs at the candidate stage.

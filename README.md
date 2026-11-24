@@ -10,7 +10,7 @@
 
 1. **API コストゼロの収集・一次トリアージ:**
    - RSS / Atom / 非 RSS サイト（AI が CSS セレクタを自動推定）/ Podcast を定期巡回。
-   - ローカル LLM で記事ごとに関心スコア（0〜100）と3行要約を自動生成し、自分の Keep / Dismiss 履歴から好みを学習。
+   - ローカル LLM が記事ごとに観点別の評価（関心合致・独自性・有益性・ノイズ減点）と3行要約を返し、0〜100 の関心スコアはコードが重み付けで合算（関心の基準は直近30日に知識ベースへ保存したノートのタグ）。速報性はスコアと別のフラグで扱う。
    - Podcast はショーノートのみで軽量判定し、人間が「取り込む」と選んだ回だけ配信元トランスクリプト取得またはローカル `whisper.cpp` で遅延文字起こし（Lazy Transcription）。
 2. **腐敗しないメダリオン型 LLM Wiki（OKF v0.3 準拠）:**
    - **Bronze (`10_Inbox/`)**: 生データ（非 OKF）。PDF / Office / 画像は `MarkItDown` + ローカル VLM で検索用サイドカー（`.extracted.md`）を自動生成。
@@ -20,6 +20,7 @@
 3. **単一 SQLite 全層ハイブリッド検索 ＋ Silver/Gold 限定ナレッジグラフ:**
    - 外部の重厚なベクトル DB を使わず、単一 SQLite（`FTS5` trigram + `sqlite-vec` 768次元ベクトル）で Bronze〜Gold をトラストティア重み付きハイブリッド検索。
    - ゲート合格済みの Silver / Gold のみからナレッジグラフを生成。
+   - グラフと Embedding から「つないだ方がよさそうな Silver のペア」を夜間に提案し、ローカル LLM が関係（同意 / 補足 / 対立の可能性）を判定。つなぐかどうかは人間が選び、相互リンクはコードが書く（LLM はリンクを書かない）。
 4. **ビルド不要の軽量 Web UI（PWA 対応）:**
    - FastAPI + Jinja2 + HTMX + Vanilla CSS（Node.js ビルド不要）。スマホの共有メニューから直接 Web クリップできる PWA 対応。
 
@@ -32,8 +33,8 @@
 | [PROMPT.md](PROMPT.md) | AI エージェントへそのまま渡せる構築依頼プロンプト集 | 構築開始時・各 Phase 着手時 |
 | [specs/01-architecture.md](specs/01-architecture.md) | 設計思想、Do's & Don'ts、ハードウェア構成パターン、同期・バックアップ戦略 | 全体設計・前提合意 |
 | [specs/02-okf-profile-and-vault.md](specs/02-okf-profile-and-vault.md) | PKM バンドル構成、OKF v0.3 Local Profile 完全スキーマ、導出値、7つのゲートルール、`AGENTS.md` 仕様 | Phase 1（基盤・ゲート） |
-| [specs/03-guardians-and-pipeline.md](specs/03-guardians-and-pipeline.md) | 決定論的スクリプト群（全11本）の仕様、SQLite スキーマ、CLI・終了コード契約 | Phase 1, 3, 4 |
-| [specs/04-triage-web-app.md](specs/04-triage-web-app.md) | `rss-triage-app` の全5画面、エンドポイント、DB スキーマ、クローラー、AI セレクタ、Podcast 遅延文字起こし、Share、PWA 仕様 | Phase 4（Web アプリ） |
+| [specs/03-guardians-and-pipeline.md](specs/03-guardians-and-pipeline.md) | 決定論的スクリプト群（全12本）の仕様、SQLite スキーマ、CLI・終了コード契約 | Phase 1, 3, 4 |
+| [specs/04-triage-web-app.md](specs/04-triage-web-app.md) | `rss-triage-app` の全6画面、エンドポイント、DB スキーマ、クローラー、観点別スコアリング、AI セレクタ、Podcast 遅延文字起こし、Share、PWA 仕様 | Phase 4（Web アプリ） |
 | [specs/05-inference-and-deploy.md](specs/05-inference-and-deploy.md) | ローカル推論サーバー（`llama-swap` + `llama.cpp` + `whisper.cpp`）、Docker Compose、systemd timer、SearXNG、Open WebUI、環境変数一覧 | Phase 2, 5（インフラ・運用） |
 | [specs/06-implementation-and-tests.md](specs/06-implementation-and-tests.md) | Phase 1〜5 実装ロードマップ、完了条件（DoD）、テスト仕様、ハマりやすいポイント集 | 全 Phase の実装・検証 |
 
@@ -91,7 +92,7 @@ The design philosophy, data structures, script contracts, web application, deplo
 
 1. **Zero-API-Cost Collection & First-Pass Triage:**
    - Periodically crawls RSS / Atom feeds, non-RSS websites (with AI-inferred CSS selectors), and Podcasts.
-   - Uses a local LLM to automatically generate an interest score (0–100) and a 3-line summary for each article, learning your preferences from your Keep / Dismiss history.
+   - A local LLM rates each article on separate axes (relevance, originality, utility, noise penalty) and writes a 3-line summary; code combines the axes into a 0–100 interest score with configurable weights (relevance is judged against the tags of notes you saved in the last 30 days). Breaking news is a separate flag, not part of the score.
    - Performs lightweight triage on Podcasts using show notes only, and runs lazy transcription (fetching publisher transcripts or transcribing locally via `whisper.cpp`) exclusively for episodes you explicitly choose to ingest.
 2. **Non-Decaying Medallion LLM Wiki (OKF v0.3 Compliant):**
    - **Bronze (`10_Inbox/`)**: Raw data (non-OKF). PDFs, Office files, and images automatically get searchable sidecars (`.extracted.md`) via `MarkItDown` + a local VLM.
@@ -101,6 +102,7 @@ The design philosophy, data structures, script contracts, web application, deplo
 3. **Single-SQLite Full-Layer Hybrid Search + Silver/Gold-Only Knowledge Graph:**
    - Without standing up heavy external vector databases, a single SQLite file (`FTS5` trigram + `sqlite-vec` 768-dim vectors) provides trust-tier-weighted hybrid search across Bronze through Gold.
    - Generates a knowledge graph strictly from gate-passing Silver / Gold notes.
+   - Every night, suggests Silver pairs worth linking (from the graph and embeddings), and a local LLM labels each pair's relation (agree / complement / possible conflict). A human decides whether to link; code writes the mutual links (the LLM never writes links).
 4. **Build-Free Lightweight Web UI (PWA-Enabled):**
    - FastAPI + Jinja2 + HTMX + Vanilla CSS (no Node.js build step). Supports PWA installation so you can clip web pages directly from your smartphone's share menu.
 
@@ -113,8 +115,8 @@ The design philosophy, data structures, script contracts, web application, deplo
 | [en/PROMPT.md](en/PROMPT.md) | Ready-to-use build prompts to hand directly to an AI agent | Project kickoff & start of each Phase |
 | [en/specs/01-architecture.md](en/specs/01-architecture.md) | Design philosophy, Do's & Don'ts, hardware topology patterns, sync & backup strategy | Overall architecture & upfront alignment |
 | [en/specs/02-okf-profile-and-vault.md](en/specs/02-okf-profile-and-vault.md) | PKM bundle layout, complete OKF v0.3 Local Profile schema, derived values, 7 gate rules, `AGENTS.md` spec | Phase 1 (Foundation & Gate) |
-| [en/specs/03-guardians-and-pipeline.md](en/specs/03-guardians-and-pipeline.md) | Specs for all 11 deterministic scripts, SQLite schemas, CLI & exit-code contracts | Phase 1, 3, 4 |
-| [en/specs/04-triage-web-app.md](en/specs/04-triage-web-app.md) | All 5 screens of `rss-triage-app`, HTTP endpoints, DB schema, crawler, AI selectors, Podcast lazy transcription, Share, PWA spec | Phase 4 (Web App) |
+| [en/specs/03-guardians-and-pipeline.md](en/specs/03-guardians-and-pipeline.md) | Specs for all 12 deterministic scripts, SQLite schemas, CLI & exit-code contracts | Phase 1, 3, 4 |
+| [en/specs/04-triage-web-app.md](en/specs/04-triage-web-app.md) | All 6 screens of `rss-triage-app`, HTTP endpoints, DB schema, crawler, per-axis scoring, AI selectors, Podcast lazy transcription, Share, PWA spec | Phase 4 (Web App) |
 | [en/specs/05-inference-and-deploy.md](en/specs/05-inference-and-deploy.md) | Local inference server (`llama-swap` + `llama.cpp` + `whisper.cpp`), Docker Compose, systemd timers, SearXNG, Open WebUI, env var reference | Phase 2, 5 (Infra & Operations) |
 | [en/specs/06-implementation-and-tests.md](en/specs/06-implementation-and-tests.md) | Phase 1–5 implementation roadmap, Definition of Done (DoD), test specs, operational gotchas | Implementation & verification of all Phases |
 

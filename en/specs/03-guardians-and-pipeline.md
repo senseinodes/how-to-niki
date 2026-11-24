@@ -1,6 +1,6 @@
 # 03. Deterministic Scripts & Autonomous Pipeline Specification (`00_System/scripts/`)
 
-Defines the specifications for all 11 scripts in `pkm/00_System/scripts/` and `pkm/00_System/schemas/okf_v03.py`.
+Defines the specifications for all 12 scripts in `pkm/00_System/scripts/` and `pkm/00_System/schemas/okf_v03.py`.
 All scripts must run on Python 3.12–3.14 using only the core dependencies in `pyproject.toml` (`pydantic`, `pyyaml`, `openai`, `sqlite-vec`, `markitdown[pdf,docx,xlsx,pptx]`) — they must not import web-app dependencies.
 
 ---
@@ -19,6 +19,7 @@ All scripts must run on Python 3.12–3.14 using only the core dependencies in `
 | `tag_stats.py` | Period-based tag ranking CLI for Silver / Gold | None (read-only) |
 | `hermes.py` | Bronze watcher → SearXNG research → autonomous Silver generation worker | `20_Literature/`, `00_System/hermes.sqlite`, `lineage.jsonl` |
 | `run_graphify.py` | Nightly knowledge graph batch restricted to gate-passing Silver / Gold | `00_System/graph/` |
+| `related_links.py` | Silver-to-Silver link candidates, LLM relation labels, adding/undoing human-chosen mutual links | `00_System/links.sqlite`; on `link`, the target Silver bodies and `lineage.jsonl` |
 | `autocommit.py` | Scheduled gated `git commit` & `push` | Git repository |
 
 ---
@@ -101,6 +102,7 @@ See [02-okf-profile-and-vault.md](02-okf-profile-and-vault.md) §6 for full rule
     - For Gold, passing requires `human:` verification, so this doubles as the "initial approval" record. Set `at` to the latest `human:` verification timestamp and include `"verified": {by, at}` (keeps `log.md` dates accurate even when backfilling existing Gold notes).
   - When Gold transitions into `review_pending`: `{"at", "event": "review_pending", "by": "process:gate-okf", "path", "title", "generated": {by, at}, "expired_verification": {by, at}}`
   - When Gold recovers from `review_pending` to `human-reviewed`: `{"at", "event": "review_cleared", "by": "process:gate-okf", "path", "title", "verified": {by, at}}`
+  - In addition, `related_links.py` appends `linked` / `unlinked` (`{"event", "path", "target", "at", "by"}`) via the same `append_lineage` (`flock`). State tracking (`read_lineage_state`) and `log.md` ignore them.
 
 ### 4.2 CLI & Exit Codes
 - `gate_okf.py [paths...] [--root DIR] [--fix] [--json] [--no-git] [--no-lineage] [-v]`
@@ -357,3 +359,70 @@ Runs nightly to commit and push changes so `gate_okf.py` Rule 7 (`git show HEAD:
 6. Unless `--no-push`, if ahead of upstream, run `git push -q` (on failure, keep the commit and exit `3` to retry next time).
 7. Exit codes: `0` = OK, `1` = gate failures unstaged (valid changes committed), `2` = not a Git repo, `3` = push failed.
 8. CLI: `autocommit.py [--root DIR] [--no-push] [--dry-run]`.
+
+---
+
+## 13. Silver-to-Silver Link Candidates (`related_links.py`)
+
+Each night, builds "Silver pairs worth linking"; on the web app's Links screen (04 §4.2) a human chooses link / reject / hold. **The LLM never writes links** (it only labels relations).
+
+### 13.1 State DB (`00_System/links.sqlite`, Git/Syncthing-ignored)
+If lost, candidates simply reappear; the links themselves live in the note bodies.
+
+```sql
+CREATE TABLE IF NOT EXISTS candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    a TEXT NOT NULL,                 -- a < b (lexicographic)
+    b TEXT NOT NULL,
+    score REAL NOT NULL,             -- ordering (similarity + 0.05 per shared tag, up to 3)
+    sim REAL,                        -- cosine similarity (NULL without embeddings)
+    shared_tags TEXT NOT NULL DEFAULT '[]',
+    same_category INTEGER NOT NULL,
+    is_new INTEGER NOT NULL DEFAULT 0, -- either note first indexed within the last 3 days
+    created_at TEXT NOT NULL,
+    relation TEXT,                   -- agree | complement | conflict | unrelated (NULL = not yet labeled)
+    point TEXT,                      -- one-sentence gist of the relation
+    UNIQUE (a, b)
+);
+CREATE TABLE IF NOT EXISTS decisions (
+    a TEXT NOT NULL, b TEXT NOT NULL,
+    decision TEXT NOT NULL,          -- linked | rejected | held
+    at TEXT NOT NULL, by TEXT NOT NULL,
+    added TEXT,                      -- for linked: the lines appended (JSON, used by undo)
+    PRIMARY KEY (a, b)
+);
+CREATE TABLE IF NOT EXISTS relations (  -- label cache (re-labeled when either note's content changes)
+    a TEXT NOT NULL, b TEXT NOT NULL,
+    sha_a TEXT NOT NULL, sha_b TEXT NOT NULL,
+    relation TEXT NOT NULL, point TEXT NOT NULL DEFAULT '', at TEXT NOT NULL,
+    PRIMARY KEY (a, b)
+);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- built_at
+```
+
+### 13.2 Building Candidates (`build`)
+1. Collect Silver notes from `00_System/graph/graph.json` (the graph of gate-passing notes only). If it is missing, exit with status `no-graph`.
+2. Average each note's chunk embeddings from `pkm.sqlite` and find nearby Silver notes via `sqlite-vec` KNN (`k = 60` chunks). Without sqlite-vec or embeddings, fall back to shared tags only.
+3. Exclude pairs that are already connected by a body link or `sources` (graph `link` / `source` edges), pairs already `linked` / `rejected` in `decisions`, and **any pair of a private note (prefix `20_Literature/28_me/` / `10_Inbox/19_private/`, or a target of `git check-ignore`) with a public one**.
+4. Accept a pair if `sim >= --min-sim` (default `0.72`) or it shares 2+ tags. Keep the top `--per-note` (default 3) per note and replace `candidates` wholesale.
+5. **Relation labeling (`classify`):** in score order, pass both notes (body truncated to 2,500 chars each) to `gemma4-fast` and have it output JSON `{"point": "...", "relation": "agree|complement|conflict|unrelated"}` (`point` is asked for first; for `conflict` it is phrased "A says ..., B says ...").
+   - If both notes' SHA256 match the cache in `relations`, reuse the previous label (keeps load on the inference host low).
+   - At most `--classify-limit` (default 30) new labels per run; the rest wait for the next night.
+   - If the inference host is unreachable, build candidates without labels (warning only). Unparseable responses skip only that pair.
+
+### 13.3 Linking (`link`) / Undo (`unlink`)
+- Both targets must be existing Silver notes under `20_Literature/`. Linking a note to itself, or a private note to a public one, raises `LinkError`.
+- Append a file-relative link to the other note, `* [<title>](<relative path>)`, to the `## 関連` (Related) section at the end of each body (create it if missing; skip if the same link already exists). When linking a candidate labeled `conflict`, append ` — 対立する見方` (opposing view) to the entry.
+- **Never change `generated`** (a link-only change must not touch approval state or freshness).
+- Run both through `gate_okf.run_gate(..., write_lineage=False)`; if either fails, restore both to their original content.
+- On success, record `linked` in `decisions` (saving the appended lines and whether the heading was created in `added`) and append `{"event": "linked", "path": a, "target": b, "at", "by"}` to `lineage.jsonl` (skipped for pairs involving a private note). It is not rendered in `log.md`.
+- `unlink` removes only the lines recorded in `added` (and the heading too, if it created the heading and the section is now empty), runs the gate, resets the decision to undecided, and records `unlinked`.
+
+### 13.4 Functions Used by the Web App (imported)
+`list_candidates(root, view)` (`all` undecided / `same` same category / `cross` cross-category / `conflict` possible conflict / `held` on hold; candidates whose notes were moved or deleted are hidden), `counts(root)` (nav badge; opens `links.sqlite` read-only), `get_candidate`, `set_decision`, `week_stats` (links and rejections this week, and the number of orphan Silver notes), `clusters` (groups of 3+ Silver notes connected by body links and `linked` decisions = Gold material candidates, including conflicting pairs inside), `gold_prompt(cluster)` (a memo for an AI agent to build a Gold note from that group; for conflicting pairs it instructs the agent to keep both views as an open question rather than picking a side).
+
+### 13.5 CLI
+- `related_links.py build [--db PATH] [--per-note 3] [--min-sim 0.72] [--no-llm] [--classify-limit 30] [--json]` (defaults can be overridden by `NIKI_LINKS_PER_NOTE` / `NIKI_LINKS_MIN_SIM` / `NIKI_LINKS_CLASSIFY_LIMIT`)
+- `related_links.py list` (undecided candidates and labels; agents may read this to find open questions for Gold)
+- `related_links.py link A.md B.md --by human:{{USER_ID}} [--no-git]` (human-only. Exit codes: `0` = linked, `1` = gate failed and reverted, `2` = pair cannot be linked)
+- Common: `--root DIR`. At night, `{{PROJECT_NAME}}-graphify@.service` runs `build` after `run_graphify.py` (05 §2.3).

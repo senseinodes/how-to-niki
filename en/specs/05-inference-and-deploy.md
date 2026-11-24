@@ -66,6 +66,7 @@ To maximize GPU memory bandwidth, run the inference stack **natively on the host
   ```
   Gate Rule 7 (protecting human authorship) and `autocommit.py` assume the bundle is a Git repository (without Git, protection silently stops working).
 - **Propagating Script Updates:** After modifying `pkm/00_System/{scripts,schemas,specs}/` in the dev repo, copy them into `{{PKM_ROOT}}/00_System/` and commit on the bundle side. Both containers and host timers execute the bundle's copy.
+- **Propagating Agent Instruction Files:** Likewise, after updating `pkm/AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`, copy them to the bundle root and commit (if you have extended `AGENTS.md` on the bundle side, `diff` first). Verify by launching `claude` in `{{PKM_ROOT}}` and checking that `/memory` lists `CLAUDE.md` and `AGENTS.md`. Launch AI agents at the bundle root (over SSH too — `search.py` and `graph.json` exist only on the server).
 - **Host Python Environment:** Run `uv sync --locked --no-dev` in `{{REPO_DIR}}` and verify `sqlite-vec` loads cleanly (06 §3 Gotcha 2).
 - Install Docker from the **official Docker apt repository** (`docker-ce` + `docker-compose-plugin`); avoid the snap package due to `/srv` mount restrictions and auto-refresh restarts.
 - Disable OS auto-suspend for 24/7 operation (`systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`).
@@ -83,7 +84,7 @@ Project name: `name: {{PROJECT_NAME}}-${NIKI_VAULT:-pkm}`
 
 > **Multi-bundle tip:** Enable `COMPOSE_PROFILES=tools` on only ONE bundle per server; leave it empty on a second bundle to avoid duplicate SearXNG / Open WebUI containers. On the second bundle, point `HERMES_SEARXNG_URL` at the first bundle's published SearXNG URL (e.g., `http://<host>:8888`), since `http://searxng:8080` only resolves within the same Compose project.
 
-> **Pass environment variables to containers explicitly:** `--env-file` only interpolates `${VAR}` expressions inside `docker-compose.yml` — it does NOT inject variables into containers. Do NOT use `env_file:` (that would leak host-specific values like `PKM_ROOT=/srv/...` into containers). Instead, enumerate each variable with defaults under `environment:` in `rss-triage-app` and `hermes-agent`: `MAC_MINI_URL`, `PKM_MODEL_REVIEW/FAST/EMBED`, `PKM_LLM_TIMEOUT`, `PKM_API_KEY`, `TZ` (`${TZ:-Asia/Tokyo}`, all 4 services); app-only `NIKI_VAULT_NAME`, `NIKI_REVIEWER`, `NIKI_CRAWL_INTERVAL`, `NIKI_CRAWL_ON_START`, `NIKI_ARCHIVE_DAYS`, `NIKI_FETCH_FULLTEXT`, `NIKI_USER_AGENT`, `HATENA_*`, `NIKI_XURL`, `SYNCTHING_*`; Hermes-only `SEARXNG_URL`, `HERMES_INTERVAL`, `HERMES_LIMIT`. Enforce via tests that every variable in `pkm.env.example` is referenced by Compose (06 §2).
+> **Pass environment variables to containers explicitly:** `--env-file` only interpolates `${VAR}` expressions inside `docker-compose.yml` — it does NOT inject variables into containers. Do NOT use `env_file:` (that would leak host-specific values like `PKM_ROOT=/srv/...` into containers). Instead, enumerate each variable with defaults under `environment:` in `rss-triage-app` and `hermes-agent`: `MAC_MINI_URL`, `PKM_MODEL_REVIEW/FAST/EMBED`, `PKM_LLM_TIMEOUT`, `PKM_API_KEY`, `TZ` (`${TZ:-Asia/Tokyo}`, all 4 services); app-only `NIKI_VAULT_NAME`, `NIKI_REVIEWER`, `NIKI_CRAWL_INTERVAL`, `NIKI_CRAWL_ON_START`, `NIKI_ARCHIVE_DAYS`, `NIKI_FETCH_FULLTEXT`, `NIKI_USER_AGENT`, `NIKI_SCORE_WEIGHTS`, `NIKI_SCORE_TAG_LIMIT`, `NIKI_SCORE_STOP_TAGS`, `HATENA_*`, `NIKI_XURL`, `SYNCTHING_*`; Hermes-only `SEARXNG_URL`, `HERMES_INTERVAL`, `HERMES_LIMIT`. Enforce via tests that every variable in `pkm.env.example` is referenced by Compose (06 §2; host-only variables used solely by systemd — `PKM_DB`, `GRAPHIFY_CMD`, `COMPOSE_PROFILES`, `NIKI_LINKS_*` — go in an exclusion list).
 
 ### 2.3 systemd Units & Timers (System Units — No Login Required)
 
@@ -108,7 +109,7 @@ ExecStart={{REPO_DIR}}/.venv/bin/python /srv/%i/00_System/scripts/<script>.py
 | `{{PROJECT_NAME}}-build-index@.timer` | Every 30 min (`*:0/30`, `RandomizedDelaySec=60`, `Persistent=true`) | `build_index.py` (`Nice=10`, `IOSchedulingClass=idle`, `TimeoutStartSec=2h`; also records lineage here) |
 | `{{PROJECT_NAME}}-autocommit@.timer` | Daily `02:30` | `autocommit.py` (leaves gate-failing files unstaged with exit 1; push failure exits 3 so systemd alerts on failure) |
 | `{{PROJECT_NAME}}-lint-wiki@.timer` | Daily `03:30` | `lint_wiki.py --save-db` (persists results to `pkm.sqlite` for the dashboard) |
-| `{{PROJECT_NAME}}-graphify@.timer` | Daily `04:00` (`RandomizedDelaySec=5min`) | `run_graphify.py` (`Nice=15`, `TimeoutStartSec=4h`) |
+| `{{PROJECT_NAME}}-graphify@.timer` | Daily `04:00` (`RandomizedDelaySec=5min`) | `run_graphify.py` → `related_links.py build` (two `ExecStart=` lines in the same `Type=oneshot` service; if graph building fails, no candidates are built and the previous night's remain. `Nice=15`, `TimeoutStartSec=4h`) |
 
 **Nightly Job Ordering Rationale:** `02:30` auto-commit (lock daytime human edits into `HEAD`) → `03:30` Wiki health lint → `04:00` build knowledge graph from finalized Silver/Gold notes.
 
@@ -136,6 +137,11 @@ ExecStart={{REPO_DIR}}/.venv/bin/python /srv/%i/00_System/scripts/<script>.py
 | `NIKI_FETCH_FULLTEXT` | Optional | `1` | Extract full article text from web pages (`0` uses feed summary only) |
 | `NIKI_USER_AGENT` | Optional | Empty (app default UA) | Custom User-Agent for crawling |
 | `NIKI_SCHEDULER` | Optional | `1` | Set `0` to disable background scheduler (testing only; not passed in Compose) |
+| `NIKI_SCORE_WEIGHTS` | Optional | Empty (= `relevance=8,originality=6,utility=6,noise_penalty=15`) | Weights for combining the interest score; on change, scored items are recomputed at next startup without the LLM |
+| `NIKI_SCORE_TAG_LIMIT` | Optional | `20` | Number of interest tags (top of last 30 days) passed to the scoring prompt |
+| `NIKI_SCORE_STOP_TAGS` | Optional | Empty | Overly broad tags to drop from interest tags (comma-separated, e.g., `tech,news,memo`) |
+| `NIKI_LINKS_PER_NOTE` / `NIKI_LINKS_MIN_SIM` | Optional | `3` / `0.72` | Link candidates per note and minimum similarity (read by host-side `related_links.py`) |
+| `NIKI_LINKS_CLASSIFY_LIMIT` | Optional | `30` | Max pairs whose relation the LLM labels per night (same) |
 | `HERMES_INTERVAL` / `HERMES_LIMIT` | Optional | `300` / `5` | Hermes polling interval (seconds) & max items per cycle |
 | `HERMES_SEARXNG_URL` | Optional | `http://searxng:8080` | SearXNG URL for Hermes (injected into container as `SEARXNG_URL`) |
 | `COMPOSE_PROFILES` | Optional | `tools` (one bundle only) | Controls startup of SearXNG + Open WebUI |

@@ -51,7 +51,7 @@ Reference specifications:
 
 Deliverables:
 1. `pyproject.toml` (managed with uv, pinned versions) and `.github/workflows/test.yml`
-2. Complete `pkm/` bundle template (directory skeleton, `index.md` at each level, `log.md`, `.gitignore`, `.stignore`, `AGENTS.md`, `00_System/specs/okf_local_profile.md`)
+2. Complete `pkm/` bundle template (directory skeleton, `index.md` at each level, `log.md`, `.gitignore`, `.stignore`, `AGENTS.md`, the entry files `CLAUDE.md` (`@AGENTS.md`) and `GEMINI.md`, `00_System/specs/okf_local_profile.md`)
 3. `pkm/00_System/schemas/okf_v03.py`
 4. `pkm/00_System/scripts/`: `pkm_config.py`, `gate_okf.py`, `lint_wiki.py`, `verify_note.py`, `autocommit.py`
 5. Unit test suites under `tests/schemas/` and `tests/scripts/`
@@ -106,18 +106,19 @@ Once complete, run `uv run pytest` to verify all tests pass.
 ```text
 Please implement Phase 4.
 Reference specifications:
-- `how-to-niki/en/specs/01-architecture.md` (Do's & Don'ts: Vanilla CSS + HTMX + Jinja2, no Node.js builds, 3-DB separation)
-- `how-to-niki/en/specs/03-guardians-and-pipeline.md` (`hermes.py`)
-- `how-to-niki/en/specs/04-triage-web-app.md` (all modules, all 5 screens, PWA, Share, AI selectors, Podcast lazy transcription)
+- `how-to-niki/en/specs/01-architecture.md` (Do's & Don'ts: Vanilla CSS + HTMX + Jinja2, no Node.js builds, separate SQLite files)
+- `how-to-niki/en/specs/03-guardians-and-pipeline.md` (`hermes.py`, `related_links.py`)
+- `how-to-niki/en/specs/04-triage-web-app.md` (all modules, all 6 screens, per-axis scoring, Links screen, PWA, Share, AI selectors, Podcast lazy transcription)
 - `how-to-niki/en/specs/06-implementation-and-tests.md` (Phase 4 DoD)
 
 Deliverables:
 1. `pkm/00_System/scripts/hermes.py` and `tests/scripts/test_hermes.py`
-2. Full `apps/rss_triage/` package (`Dockerfile`, `README.md`, `rss_triage/*.py`, `templates/*.html`, `static/app.css`, `static/app.js`, `static/manifest.webmanifest`, `static/sw.js`, `static/icon.svg`, `static/vendor/htmx.min.js`)
+2. `pkm/00_System/scripts/related_links.py` (Silver-to-Silver link candidates, relation labels, adding and undoing mutual links; state in `links.sqlite`) and `tests/scripts/test_related_links.py`
+3. Full `apps/rss_triage/` package (`Dockerfile`, `README.md`, `rss_triage/*.py`, `templates/*.html`, `static/app.css`, `static/app.js`, `static/manifest.webmanifest`, `static/sw.js`, `static/icon.svg`, `static/vendor/htmx.min.js`)
    - Do not use any CSS framework or JS build tool; implement light/dark theme support, mobile single-pane switching below 768px, and keyboard shortcuts
    - Open `pkm.sqlite` read-only and store app state in a separate `rss_triage.sqlite` file
    - Save Keep items and transcripts from "private" sources into `10_Inbox/19_private/`, and implement isolation on both the Hermes and Share sides (04 §3.6–3.8)
-3. Full test suite under `tests/apps/` (core, web routes, all 5 screens, non-RSS sites, Podcast lazy transcription, Share protection, PWA)
+4. Full test suite under `tests/apps/` (core, per-axis score combination and rescoring, web routes, all 6 screens, non-RSS sites, Podcast lazy transcription, Share protection, PWA)
 
 Once complete, run `uv run pytest` to verify all tests pass.
 ```

@@ -27,11 +27,12 @@ AI エージェントが実装時に独自判断で逸脱してはならない�
    Web UI は **FastAPI + Jinja2 + HTMX + Vanilla CSS（CSS Variables / Grid / Flexbox）+ 最小限の Vanilla JS** で構築する。Node.js、Tailwind CSS、React/Vue、Vite、Webpack 等のフロントエンドビルド環境は導入しない。HTMX はベンダーファイル（`static/vendor/htmx.min.js`）としてローカル同梱し CDN に依存しない。
 2. **重厚な外部 DB・別系統メモリシステムの導入禁止:**
    PostgreSQL、MySQL、Neo4j、Qdrant、Chroma、Elasticsearch 等の外部 DB コンテナは立てない。永続化と検索はすべて **SQLite 3（`FTS5` + `sqlite-vec`）** に集約する。
-3. **3つの SQLite ファイルを混ぜないこと:**
+3. **4つの SQLite ファイルを混ぜないこと:**
    用途とライフサイクルが異なるため、必ず同一フォルダ（`00_System/`）内の別ファイルに分ける。
    - `pkm.sqlite`: 検索インデックス・タグ統計・lint 結果（`build_index.py --rebuild` でファイルごと再作成可能）
    - `rss_triage.sqlite`: Web アプリの状態（ソース・記事・操作履歴・巡回ログ。`pkm.sqlite` を再作成しても消えない）
    - `hermes.sqlite`: 自律 Silver 生成ワーカーの処理履歴・リトライ状態・自己修復回数
+   - `links.sqlite`: Silver 同士のつながり候補・人間の判断（つなぐ / 却下 / 保留）・LLM の関係判定（`related_links.py`。消えても候補が再び出るだけで、リンク自体はノートの本文に残る）
 4. **Bronze 層への OKF フロントマター混入禁止:**
    `10_Inbox/` 配下のファイルに `type` キーを付与してはならない。
 5. **導出値を LLM に書かせない・Silver を移動しない:**
@@ -58,6 +59,9 @@ AI エージェントが実装時に独自判断で逸脱してはならない�
    - 両フォルダを `.gitignore` で除外し（GitHub に上げない。Syncthing では同期する）、`gate_okf.py` / `build_index.py` は `git check-ignore` を見て `lineage.jsonl` / `log.md` へ記録しない。
    - `hermes.py` は `19_private/` 由来の Bronze を LLM の配置計画にかけず `28_me` に固定し、SearXNG（外部検索エンジン）へ検索語を送らない。
    - Web アプリは `sources.private == 1` と、パス接頭辞 `10_Inbox/19_private/` / `20_Literature/28_me/` の両方で Share を拒否する。
+   - `related_links.py` は私的ノートと公開ノートを組にしない（リンクを書くと公開ノートに私的ノートのパスが残るため）。
+7. **リンクは人間が選び、コードが書く:**
+   Silver 同士の相互リンク（本文末尾の `## 関連`）は、夜間に作った候補から人間が選び、`related_links.py` が追記して `gate_okf.py` に通す（不合格なら元に戻す）。LLM は候補の関係（同意 / 補足 / 対立の可能性）を判定するだけで、リンクを書かない。対立は解消せず「— 対立する見方」として残し、Gold で論点として扱う。
 
 ---
 
@@ -83,6 +87,7 @@ AI エージェントが実装時に独自判断で逸脱してはならない�
 │      - autocommit.py  (02:30)  : ゲート検証付き自動 git commit & push    │
 │      - lint_wiki.py   (03:30)  : リンク切れ・孤立・SHOULD点検 → DB保存   │
 │      - run_graphify.py(04:00)  : Silver/Gold 限定ナレッジグラフ生成      │
+│        → related_links.py build : Silver のつながり候補＋関係判定        │
 └───────────────────────────────┬─────────────────────────────────────────┘
                                 │ HTTP :8080 (OpenAI 互換 API / On-Demand)
 ┌───────────────────────────────▼─────────────────────────────────────────┐

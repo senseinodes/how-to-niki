@@ -22,6 +22,8 @@
 ```text
 pkm/
 ├── AGENTS.md                        # エージェント共通行動規範（非OKF）
+├── CLAUDE.md                        # Claude Code の入口（`@AGENTS.md` を取り込むだけ。中身を持たない）
+├── GEMINI.md                        # Gemini CLI の入口（AGENTS.md を読むよう指示するだけ）
 ├── index.md                         # [自動生成] バンドルルート目録（フロントマターに okf_version: "0.3" を保持）
 ├── log.md                           # [自動生成] lineage.jsonl から生成する OKF 標準更新ログ
 ├── .gitignore                       # Git 除外設定
@@ -38,7 +40,8 @@ pkm/
 │   │   └── rejected/                # [Git除外] 自己修復失敗時の下書き保存先
 │   ├── pkm.sqlite                   # [Git/Syncthing除外] build_index / lint_wiki 用 DB
 │   ├── rss_triage.sqlite            # [Git/Syncthing除外] rss-triage-app 状態 DB
-│   └── hermes.sqlite                # [Git/Syncthing除外] hermes.py 処理状態 DB
+│   ├── hermes.sqlite                # [Git/Syncthing除外] hermes.py 処理状態 DB
+│   └── links.sqlite                 # [Git/Syncthing除外] related_links.py のつながり候補・判断・関係判定
 ├── 10_Inbox/                        # 【Bronze】非OKF
 │   ├── index.md
 │   ├── 11_rss/                      # RSS・非RSSサイトから Keep した記事
@@ -183,7 +186,7 @@ description: "RSS・Podcast・Webクリップから育てる個人用 LLM Wiki"
 | :--- | :--- | :--- |
 | **承認済み** | `50_Knowledge/` かつ `trust_tier == "human-reviewed"` | 合格（`review_pending = False`） |
 | **再レビュー待ち** | `50_Knowledge/` かつ `trust_tier != "human-reviewed"` かつ過去に `human:` 検証が1件以上ある | **合格（エラーにしない・ファイル無変更）**。`review_pending = True` とし、`lineage.jsonl` へ `review_pending` を記録、`index.md` と Web UI バッジに表示 |
-| **未承認配置** | `50_Knowledge/` かつ `human:` 検証履歴が0件 | **エラー**（昇格には人間承認が必須） |
+| **未承認配置（初回の承認待ち）** | `50_Knowledge/` かつ `human:` 検証履歴が0件 | **エラー**（昇格には人間承認が必須）。エラー文言は `okf_v03.MISSING_HUMAN_VERIFICATION` 定数で定義し、Web アプリはこの文言だけで落ちている Gold を「初回の承認待ち」として一覧・承認できるようにする（04 §4.2）。エージェントはこのエラーを想定どおりとして扱い、`verified` を足さずに人間へ渡す |
 
 再レビュー後に人間が `verify_note.py` または UI の「承認する」ボタンで新しい `{ by: human:{{USER_ID}}, at: <now> }` を追記してゲートを通すと、自動的に承認済みへ復帰し `lineage.jsonl` へ `review_cleared` が記録される。
 
@@ -234,11 +237,15 @@ description: "RSS・Podcast・Webクリップから育てる個人用 LLM Wiki"
    - 人間: `human:{{USER_ID}}`
    - スクリプト: `process:gate-okf`, `process:build-index`, `process:lint-wiki`
 4. **書いてよいキー・書いてはいけないキー表**（`x-pkm-medal`, `okf_version`, `jd_id`, `x-pkm-my-comment`, `verified` の扱い）。
-5. **Silver → Gold の合成手順**（Silver は移動せず新ノートを作成、検証は人間のみ）。
+5. **Silver → Gold の合成手順**（Silver は移動せず新ノートを作成、検証は人間のみ。初回承認は `verify_note.py` か Web アプリの「初回の承認待ち」から）。
 6. **自動生成物の編集禁止リスト**（`index.md`, `log.md`, `lineage.jsonl`, `*.extracted.md`, `00_System/graph/`）。
-7. **OKF 公式 Agent Skills（`okf-generate` / `okf-consume`）との併用ルール:**
+7. **Silver 本文末尾の `## 関連` の扱い:** 人間が「つながり」画面で選んだ相互リンク（`related_links.py` が書く）。エージェントは項目を消したり並べ替えたりせず、Silver を書き直すときも残す。「— 対立する見方」付きの項目は人間が食い違いを確認したペアで、片方を書き換えて矛盾を解消しない（Gold では論点として両方を扱う）。エージェントは `related_links.py link` を実行しない。
+8. **OKF 公式 Agent Skills（`okf-generate` / `okf-consume`）との併用ルール:**
    - 汎用の公式スキルよりローカルプロファイルが優先される差分表（`type` の3値限定、`description` 1〜3文、`index.md`/`log.md` はスキルで書かない、`gate_okf.py` を必須実行、脚注は `[^<id>]` 形式）。
-8. **禁止事項サマリー。**
+9. **調べるときの導線（検索とグラフ）:** grep の前に `search.py`（全層ハイブリッド検索）を使うこと。Claude Code の Grep / Glob は `.gitignore` に従うため、サイドカー（`*.extracted.md`）・`28_me/`・`19_private/`・`00_System/graph/` は grep に出てこず `search.py` でしか見つからないこと。実行方法（`PKM_ENV_FILE` とホストの venv の Python）、終了コード、`WARN:`（Embedding に届かず FTS のみ）の扱い、`graph.json` の形と1ホップ近傍の引き方、`related_links.py list` で読めるつながり候補の判定（機械の推測であること）。`okf-consume` の手順でも最初に `search.py` を使うよう案内する。
+10. **禁止事項サマリー。**
+
+**入口ファイル:** Claude Code は `CLAUDE.md`（`@AGENTS.md` の取り込み）、Gemini CLI は `GEMINI.md` 経由で `AGENTS.md` を読む。Antigravity は `AGENTS.md` を直接読む（1ファイル 24 KB 程度が上限なので、`AGENTS.md` はその範囲に収める）。ルールは `AGENTS.md` だけに書き、入口ファイルには中身を持たせない。
 
 ---
 

@@ -51,7 +51,7 @@ Phase 1 を実装してください。
 
 実装物:
 1. `pyproject.toml`（uv 管理・バージョン固定）および `.github/workflows/test.yml`
-2. `pkm/` バンドルテンプレート一式（ディレクトリ骨格、各階層の `index.md`、`log.md`、`.gitignore`、`.stignore`、`AGENTS.md`、`00_System/specs/okf_local_profile.md`）
+2. `pkm/` バンドルテンプレート一式（ディレクトリ骨格、各階層の `index.md`、`log.md`、`.gitignore`、`.stignore`、`AGENTS.md`、入口ファイル `CLAUDE.md`（`@AGENTS.md`）と `GEMINI.md`、`00_System/specs/okf_local_profile.md`）
 3. `pkm/00_System/schemas/okf_v03.py`
 4. `pkm/00_System/scripts/` の `pkm_config.py`, `gate_okf.py`, `lint_wiki.py`, `verify_note.py`, `autocommit.py`
 5. `tests/schemas/` と `tests/scripts/` の単体テスト一式
@@ -106,18 +106,19 @@ Phase 3 を実装してください。
 ```text
 Phase 4 を実装してください。
 参照仕様:
-- `how-to-niki/specs/01-architecture.md`（Do's & Don'ts: Vanilla CSS + HTMX + Jinja2、Node.js ビルド禁止、3DB 分離）
-- `how-to-niki/specs/03-guardians-and-pipeline.md`（`hermes.py`）
-- `how-to-niki/specs/04-triage-web-app.md`（全モジュール・全5画面・PWA・Share・AI セレクタ・Podcast 遅延文字起こし）
+- `how-to-niki/specs/01-architecture.md`（Do's & Don'ts: Vanilla CSS + HTMX + Jinja2、Node.js ビルド禁止、SQLite ファイルの分離）
+- `how-to-niki/specs/03-guardians-and-pipeline.md`（`hermes.py`, `related_links.py`）
+- `how-to-niki/specs/04-triage-web-app.md`（全モジュール・全6画面・観点別スコアリング・つながり画面・PWA・Share・AI セレクタ・Podcast 遅延文字起こし）
 - `how-to-niki/specs/06-implementation-and-tests.md`（Phase 4 の DoD）
 
 実装物:
 1. `pkm/00_System/scripts/hermes.py` と `tests/scripts/test_hermes.py`
-2. `apps/rss_triage/` 一式（`Dockerfile`, `README.md`, `rss_triage/*.py`, `templates/*.html`, `static/app.css`, `static/app.js`, `static/manifest.webmanifest`, `static/sw.js`, `static/icon.svg`, `static/vendor/htmx.min.js`）
+2. `pkm/00_System/scripts/related_links.py`（Silver 同士のつながり候補・関係判定・相互リンクの追記と取り消し。状態は `links.sqlite`）と `tests/scripts/test_related_links.py`
+3. `apps/rss_triage/` 一式（`Dockerfile`, `README.md`, `rss_triage/*.py`, `templates/*.html`, `static/app.css`, `static/app.js`, `static/manifest.webmanifest`, `static/sw.js`, `static/icon.svg`, `static/vendor/htmx.min.js`）
    - CSS フレームワークや JS ビルドツールは使わず、ライト/ダーク対応・768px 未満のモバイル1ペイン切替・キーボードショートカットを実装すること
    - `pkm.sqlite` は読み取り専用で開き、アプリ状態は別ファイル `rss_triage.sqlite` に保存すること
    - 「私的」ソースの Keep・文字起こしは `10_Inbox/19_private/` に保存し、Hermes・Share 側の隔離（04 §3.6–3.8）も実装すること
-3. `tests/apps/` のテスト一式（コア・Web ルート・全5画面・非 RSS サイト・Podcast 遅延文字起こし・Share 保護・PWA）
+4. `tests/apps/` のテスト一式（コア・観点別スコアの合算と再計算・Web ルート・全6画面・非 RSS サイト・Podcast 遅延文字起こし・Share 保護・PWA）
 
 完了後、`uv run pytest` で全テスト合格を確認してください。
 ```
